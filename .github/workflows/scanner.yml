@@ -1,9 +1,9 @@
 name: Arbitrage Scanner
 
 on:
-  workflow_dispatch: # Allows you to click a button to run it manually
+  workflow_dispatch: # Manual button
   schedule:
-    - cron: '*/5 * * * *' # Runs automatically every 5 minutes
+    - cron: '*/20 * * * *' # Runs every 20 minutes
 
 jobs:
   run-bot:
@@ -24,4 +24,5 @@ jobs:
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
         run: python main.py
