@@ -2,7 +2,6 @@ import os
 import requests
 import json
 import re
-import time
 from datetime import datetime
 import pytz
 
@@ -11,82 +10,67 @@ TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 ODDS_API_KEY = os.environ.get("ODDS_API_KEY")
 
-# Today's Playoff Teams (To make matching faster)
-NBA_TEAMS = ["celtics", "76ers", "philadelphia", "spurs", "blazers", "portland", "lakers", "rockets", "nuggets", "timberwolves", "knicks", "hawks"]
-
 def clean(text):
     return re.sub(r'[^a-z0-9]', '', text.lower())
 
 def get_1xbet_data():
-    """Fetches real game odds (Winner & Totals) from 1xBet."""
+    """Fetches real game odds from 1xBet."""
     print("📡 Fetching 1xBet...")
     url = "https://api.the-odds-api.com/v4/sports/basketball_nba/odds"
     params = {"apiKey": ODDS_API_KEY, "regions": "eu", "markets": "h2h,totals", "bookmakers": "1xbet"}
     try:
         res = requests.get(url, params=params).json()
-        if isinstance(res, dict): 
-            print(f"⚠️ 1xBet API Error: {res.get('message')}")
-            return {}
-        
         data = {}
         for game in res:
             h, a = game['home_team'].lower(), game['away_team'].lower()
             game_id = f"{clean(h)}-{clean(a)}"
-            print(f"📍 1xBet Found: {game['home_team']} vs {game['away_team']}")
-            
+            print(f"📍 1xBet Game Found: {game['home_team']} vs {game['away_team']}")
             for b in game.get("bookmakers", []):
                 for m in b.get("markets", []):
-                    # Winner Odds
                     if m['key'] == 'h2h':
                         for o in m['outcomes']:
-                            data[f"{game_id}-win-{clean(o['name'])}"] = {"prob": (1/o['price'])*100, "label": f"{o['name']} Win", "odds": o['price']}
-                    # Over/Under Odds
-                    if m['key'] == 'totals':
-                        for o in m['outcomes']:
-                            if o['name'] == "Under":
-                                data[f"{game_id}-under-{o['point']}"] = {"prob": (1/o['price'])*100, "label": f"Under {o['point']} pts", "odds": o['price']}
+                            data[f"{game_id}-win-{clean(o['name'])}"] = {"prob": (1/o['price'])*100, "label": f"{o['name']} Win"}
         return data
     except: return {}
 
 def get_polymarket_data():
-    """Fetches all active events and finds NBA games manually."""
-    print("📡 Fetching Polymarket (Scanning 200 events)...")
-    url = "https://gamma-api.polymarket.com/events?limit=200&active=true&closed=false"
+    """Fetches directly from the /markets endpoint (Highest Volume)."""
+    print("📡 Fetching Polymarket Markets (High Volume)...")
+    # Using the /markets endpoint directly often works better than /events
+    url = "https://gamma-api.polymarket.com/markets?limit=100&active=true&closed=false&order=volume24hr&dir=desc"
     try:
         res = requests.get(url).json()
         data = {}
-        for event in res:
-            title = event.get('title', '').lower()
-            # Only look at events containing our Playoff teams
-            if any(team in title for team in NBA_TEAMS):
-                print(f"📍 Poly Found: {event.get('title')}")
+        for m in res:
+            # We look for team names in the question (e.g., "Will the Celtics win?")
+            q = m.get('question', '').lower()
+            
+            # Print everything that looks like NBA for debugging
+            if "nba" in q or "celtics" in q or "76ers" in q or "lakers" in q:
+                print(f"📍 Poly Market Found: {m.get('question')}")
                 
-                # Match teams to create a game_id
-                matched_teams = [t for t in NBA_TEAMS if t in title]
-                if len(matched_teams) < 2: continue
-                game_id = "-".join(sorted([clean(matched_teams[0]), clean(matched_teams[1])]))
-
-                for m in event.get('markets', []):
-                    q = m.get('question', '').lower()
+                # Identify which game this belongs to
+                # We extract two team names from the question
+                # Simple Logic: if a question has 'celtics' and '76ers', it's that game
+                matched_teams = []
+                for team in ["celtics", "76ers", "philadelphia", "lakers", "rockets", "nuggets", "spurs", "blazers"]:
+                    if team in q: matched_teams.append(team)
+                
+                if len(set(matched_teams)) >= 2:
+                    sorted_teams = sorted(list(set(matched_teams)))
+                    game_id = f"{clean(sorted_teams[0])}-{clean(sorted_teams[1])}"
+                    
                     prices = m.get('outcomePrices')
                     if isinstance(prices, str): prices = json.loads(prices)
-                    if not prices: continue
-
-                    # Winner Market
-                    if "win" in q and "points" not in q:
-                        for i, outcome in enumerate(m.get('outcomes', [])):
-                            team_name = outcome.lower()
-                            data[f"{game_id}-win-{clean(team_name)}"] = {"prob": float(prices[i])*100, "label": f"{outcome} Win"}
                     
-                    # Totals Market
-                    if "over" in q and "points" in q:
-                        line_match = re.search(r"(\d+\.?\d*)", q)
-                        if line_match:
-                            line = line_match.group(1)
-                            # Polymarket usually prices 'Yes' for Over. So Under prob = 100 - Over prob.
-                            data[f"{game_id}-under-{line}"] = {"prob": (1.0 - float(prices[0]))*100, "label": f"Under {line} pts"}
+                    if "win" in q and prices:
+                        for i, outcome in enumerate(m.get('outcomes', [])):
+                            team_key = clean(outcome)
+                            data[f"{game_id}-win-{team_key}"] = {"prob": float(prices[i])*100, "label": f"{outcome} Win"}
         return data
-    except: return {}
+    except Exception as e:
+        print(f"❌ Poly Error: {e}")
+        return {}
 
 def run_scanner():
     print(f"⏰ Scan Started: {datetime.now(pytz.timezone('America/Toronto')).strftime('%H:%M:%S')}")
@@ -95,30 +79,20 @@ def run_scanner():
     
     print("\n--- 🔍 CROSS-CHECKING ---")
     found_any = False
-    
     for key in xbet:
         if key in poly:
             x_p, p_p = xbet[key]['prob'], poly[key]['prob']
             total = x_p + p_p
             print(f"📊 Match: {xbet[key]['label']} | 1xBet: {round(x_p,1)}% | Poly: {round(p_p,1)}% | Total: {round(total,1)}%")
             
-            if total < 99.5: # 0.5% margin for safety
+            if total < 100:
                 found_any = True
                 profit = (100 / (total / 100)) - 100
-                p_stake = round((p_p / total) * 100, 1)
-                x_stake = round((x_p / total) * 100, 1)
-                
-                alert = (
-                    f"💰 ARB FOUND: {xbet[key]['label']}\n"
-                    f"Benefit: {round(profit, 2)}%\n\n"
-                    f"🔵 Poly: {p_stake}% of cash\n"
-                    f"🟢 1xBet: {x_stake}% of cash\n\n"
-                    f"⏱ {datetime.now(pytz.timezone('America/Toronto')).strftime('%B %d %H:%M et')}"
-                )
-                send_telegram_alert(alert)
+                msg = f"💰 ARB FOUND: {xbet[key]['label']}\nProfit: {round(profit,2)}%\n\n🔵 Poly: {round(p_p/total*100,1)}%\n🟢 1xBet: {round(x_p/total*100,1)}%"
+                send_telegram_alert(msg)
 
     if not found_any:
-        print("\n⚖️ Results: No arbs found. Markets are balanced.")
+        print("⚖️ No arbitrage found at this moment.")
 
 def send_telegram_alert(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
