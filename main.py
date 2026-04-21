@@ -33,7 +33,13 @@ def get_eastern_time():
     """Generates the exact timestamp format you requested in ET."""
     eastern = pytz.timezone('America/Toronto')
     now = datetime.now(eastern)
-    return now.strftime("%B %d %H:%M ET").lower()
+    return now.strftime("%B %d %H:%M et").lower()
+
+def get_current_date():
+    """Gets just the date for the match header."""
+    eastern = pytz.timezone('America/Toronto')
+    now = datetime.now(eastern)
+    return now.strftime("%B %d")
 
 def calculate_profit(poly_prob, xbet_prob):
     """The Arbitrage Math Engine."""
@@ -46,10 +52,10 @@ def calculate_profit(poly_prob, xbet_prob):
 def get_1xbet_live_odds():
     """PLACEHOLDER: Dummy data for testing."""
     return {
-        "Cleveland vs Rockets": {"market": "under 216.5", "prob": 51.5},
-        "Lakers vs Nuggets": {"market": "over 205.5", "prob": 48.0},
-        "Celtics vs Heat": {"market": "under 220.5", "prob": 45.4},
-        "Spurs vs Mavericks": {"market": "over 210.5", "prob": 58.0}
+        "Cleveland vs Rockets": {"market": "under 216.5 points", "prob": 51.5},
+        "Lakers vs Nuggets": {"market": "over 205.5 points", "prob": 48.0},
+        "Celtics vs Heat": {"market": "under 220.5 points", "prob": 45.4},
+        "Spurs vs Mavericks": {"market": "over 210.5 points", "prob": 58.0}
     }
 
 def get_polymarket_live_odds():
@@ -67,6 +73,7 @@ def find_top_3_arbitrages():
     xbet_data = get_1xbet_live_odds()
     poly_data = get_polymarket_live_odds()
     timestamp = get_eastern_time()
+    match_date = get_current_date()
     
     found_arbs = []
 
@@ -81,12 +88,20 @@ def find_top_3_arbitrages():
             profit = calculate_profit(poly_prob, xbet_prob)
             
             if profit > 0:
+                # ---------------------------------------------------------
+                # Scaling your money to equal 100% exactly
+                # ---------------------------------------------------------
+                total_implied = poly_prob + xbet_prob
+                poly_stake = round((poly_prob / total_implied) * 100, 1)
+                xbet_stake = round((xbet_prob / total_implied) * 100, 1)
+
                 message = (
-                    f"NBA - {game} - april 21\n"
-                    f"{poly_prob}% of money on {poly_market} on poly market\n"
-                    f"{xbet_prob}% of {xbet_market} points in 1 xbet\n"
-                    f"total benefit is {profit}%\n"
-                    f"this calculation was done on {timestamp}"
+                    f"🏀 NBA: {game}\n"
+                    f"📅 Match Date: {match_date}\n\n"
+                    f"🔵 Polymarket: Put {poly_stake}% of money on {poly_market}\n"
+                    f"🟢 1xBet: Put {xbet_stake}% of money on {xbet_market}\n\n"
+                    f"💰 Total Benefit: {profit}%\n\n"
+                    f"⏱ Calc Done: {timestamp}"
                 )
                 
                 found_arbs.append({
