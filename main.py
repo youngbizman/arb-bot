@@ -3,15 +3,15 @@ import requests
 import json
 from datetime import datetime
 import pytz
+from decimal import Decimal, getcontext
+
+# Set high precision for decimal arbitrage math
+getcontext().prec = 28
 
 # Secure keys
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 ODDS_API_KEY = os.environ.get("ODDS_API_KEY")
-
-# TEMPORARY FIX: The Gamma API underprices the real "Ask" by roughly 6 cents.
-# We add this buffer to prevent fake arbitrage alerts until we integrate the Orderbook API.
-SPREAD_BUFFER = 0.065 
 
 def clean(text):
     """Extracts the team nickname for perfect matching."""
@@ -34,12 +34,53 @@ def get_1xbet():
                         if m['key'] == 'h2h':
                             for o in m['outcomes']:
                                 key = f"{clean(o['name'])}-win"
-                                data[key] = {"prob": (1/o['price']), "team": o['name'], "game": f"{h} vs {a}"}
+                                data[key] = {
+                                    "decimal_odds": Decimal(str(o['price'])), 
+                                    "team": o['name'], 
+                                    "game": f"{h} vs {a}"
+                                }
         return data
-    except: return {}
+    except Exception as e:
+        print(f"❌ 1xBet Fetch Error: {e}")
+        return {}
+
+def get_poly_best_ask(market, team_name):
+    """Gets the true executable Ask price using Gamma or CLOB Orderbook."""
+    try:
+        outcomes = json.loads(market.get("outcomes") or "[]")
+        token_ids = json.loads(market.get("clobTokenIds") or "[]")
+        
+        if team_name not in outcomes:
+            return None
+            
+        idx = outcomes.index(team_name)
+        token_id = token_ids[idx] if idx < len(token_ids) else None
+        
+        if token_id is None:
+            return None
+
+        # Fast path: Gamma already exposes top-of-book on market objects
+        if market.get("bestAsk") is not None:
+            return Decimal(str(market["bestAsk"]))
+
+        # Fallback: authoritative CLOB order book
+        book = requests.get(
+            "https://clob.polymarket.com/book",
+            params={"token_id": token_id},
+            timeout=10,
+        ).json()
+        
+        asks = book.get("asks") or []
+        if not asks:
+            return None
+            
+        return Decimal(asks[0]["price"])
+    except Exception as e:
+        print(f"❌ CLOB Fetch Error: {e}")
+        return None
 
 def get_polymarket():
-    """Sniper scan using NBA Moneyline JSON parsing."""
+    """Sniper scan using NBA Moneyline JSON parsing and precise Ask prices."""
     url = "https://gamma-api.polymarket.com/events?series_id=10345&active=true&closed=false&limit=100"
     try:
         res = requests.get(url).json()
@@ -49,57 +90,67 @@ def get_polymarket():
         for event in events:
             title = event.get('title', '')
             for m in event.get('markets', []):
-                if m.get('sportsMarketType') == 'moneyline':
+                if m.get('sportsMarketType') == 'moneyline' and m.get('acceptingOrders') == True:
                     outcomes_str = m.get('outcomes', "[]")
-                    prices_str = m.get('outcomePrices', "[]")
-                    
                     outcomes = json.loads(outcomes_str) if isinstance(outcomes_str, str) else outcomes_str
-                    prices = json.loads(prices_str) if isinstance(prices_str, str) else prices_str
                     
-                    if outcomes and prices:
-                        for i, team_name in enumerate(outcomes):
+                    if outcomes:
+                        for team_name in outcomes:
                             team_id = clean(team_name)
-                            # Apply the spread buffer to simulate the real "Buy" price on the UI
-                            raw_price = float(prices[i])
-                            adjusted_price = raw_price + SPREAD_BUFFER if raw_price > 0 else 0
-                            data[f"{team_id}-win"] = {"prob": adjusted_price, "label": team_name}
+                            best_ask = get_poly_best_ask(m, team_name)
+                            
+                            if best_ask is not None:
+                                data[f"{team_id}-win"] = {"best_ask": best_ask, "label": team_name}
         return data
-    except: return {}
+    except Exception as e:
+        print(f"❌ Poly Events Error: {e}")
+        return {}
 
 def run_scan():
     print("📡 Fetching Market Data...")
     xbet = get_1xbet()
     poly = get_polymarket()
     
-    print("\n--- 📊 INTERNAL DATA TABLE (WITH SPREAD BUFFER) ---")
-    print(f"{'TEAM':<20} | {'1XBET %':<10} | {'POLY %':<10}")
-    print("-" * 46)
+    print("\n--- 📊 INTERNAL DATA TABLE (REAL ASK PRICES) ---")
+    print(f"{'TEAM':<20} | {'1XBET (DECIMAL)':<15} | {'POLY ASK %':<10}")
+    print("-" * 52)
     
     found_any = False
     
     for key, x_val in xbet.items():
         if key in poly:
-            x_prob = x_val['prob']
-            p_prob = poly[key]['prob']
-            print(f"{x_val['team']:<20} | {round(x_prob*100, 1)}%      | {round(p_prob*100, 1)}%")
+            d = x_val['decimal_odds']
+            p = poly[key]['best_ask']
+            
+            print(f"{x_val['team']:<20} | {float(d):<15} | {round(float(p)*100, 1)}%")
             
             game_name = x_val['game']
+            # Find the opponent on 1xBet
             other_x = next((v for k, v in xbet.items() if v['game'] == game_name and v['team'] != x_val['team']), None)
             
             if other_x:
-                # Arbitrage Math: (Adjusted Poly Price for Team A) + (1xBet Price for Team B)
-                total_arb_sum = p_prob + other_x['prob']
+                opp_d = other_x['decimal_odds']
+                inv_opp_d = Decimal("1") / opp_d
                 
-                if total_arb_sum < 1.0:
+                # Math from the document: arb_sum = Poly Ask + (1 / Sportsbook Decimal)
+                arb_sum = p + inv_opp_d
+                
+                if arb_sum < Decimal("1"):
                     found_any = True
-                    profit = (1.0 / total_arb_sum - 1.0) * 100
                     
-                    # Restored formatting
+                    # Calculate Stakes for a $100 Bankroll
+                    B = Decimal("100")
+                    poly_stake = B * p / arb_sum
+                    book_stake = B * inv_opp_d / arb_sum
+                    
+                    guaranteed_payout = B / arb_sum
+                    profit_margin = (guaranteed_payout - B) / B * Decimal("100")
+                    
                     alert = (
                         f"💰 ARB FOUND: {game_name}\n"
-                        f"Profit: {round(profit, 2)}%\n\n"
-                        f"🔵 Poly: {round((p_prob/total_arb_sum)*100, 1)}% on '{poly[key]['label']}'\n"
-                        f"🟢 1xBet: {round((other_x['prob']/total_arb_sum)*100, 1)}% on '{other_x['team']}'\n\n"
+                        f"Profit: {round(float(profit_margin), 2)}%\n\n"
+                        f"🔵 Poly: {round(float(poly_stake), 1)}% on '{poly[key]['label']}'\n"
+                        f"🟢 1xBet: {round(float(book_stake), 1)}% on '{other_x['team']}'\n\n"
                         f"⏱ Calc Done: {datetime.now(pytz.timezone('America/Toronto')).strftime('%B %d %H:%M et').lower()}"
                     )
                     send_telegram_alert(alert)
