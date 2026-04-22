@@ -1,4 +1,96 @@
-# 2. Iterate and Match (Protecting the API rate limit)
+import logging
+import json
+from datetime import datetime, timezone
+from decimal import Decimal, getcontext
+
+from .api_clients import ApiClients
+from .config import ConfigError, load_settings
+from .models import ArbitrageOpportunity
+
+logger = logging.getLogger(__name__)
+getcontext().prec = 28
+
+# --- HELPER FUNCTIONS FROM OUR ORIGINAL MATH ---
+def clean(text: str) -> str:
+    if not text: return ""
+    return str(text).lower().replace("trail blazers", "blazers").split()[-1]
+
+def parse_iso8601_to_epoch(time_str):
+    if not time_str: return 0
+    t = str(time_str).replace(" ", "T")
+    if t.endswith("+00"): t += ":00" 
+    if t.endswith("Z"): t = t.replace("Z", "+00:00")
+    try: return int(datetime.fromisoformat(t).timestamp())
+    except ValueError:
+        try: return int(datetime.strptime(t[:19], "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc).timestamp())
+        except ValueError: return 0
+
+def is_target_single_game(fiat_commence_time, poly_start, poly_end):
+    t_commence = parse_iso8601_to_epoch(fiat_commence_time)
+    t_game = parse_iso8601_to_epoch(poly_start)
+    t_end = parse_iso8601_to_epoch(poly_end)
+    if t_commence == 0: return False
+    if t_game > 0 and abs(t_game - t_commence) > 14400: return False
+    if t_end > 0 and abs(t_end - t_commence) > (48 * 3600): return False
+    return True
+
+# --- MAIN ORCHESTRATOR ---
+def run() -> None:
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+
+    try:
+        settings = load_settings()
+    except ConfigError as exc:
+        logger.error(f"Configuration error: {exc}")
+        return
+
+    clients = ApiClients(settings)
+    
+    try:
+        logger.info("📡 Initializing High-Density Multi-Market Sniper...")
+        
+        # 1. Fetch Raw Data using your new robust clients
+        raw_odds_data = clients.get_fiat_data()
+        raw_poly_events = clients.get_polymarket_events()
+        
+        # Format the fiat data safely
+        fiat_games = {}
+        for game in raw_odds_data:
+            h, a = game.get('home_team'), game.get('away_team')
+            if not h or not a: continue
+            commence_time = game.get('commence_time', '')
+            game_data = {"home": h, "away": a, "commence_time": commence_time, "moneyline": {}, "totals": {}, "spreads": {}, "1h_moneyline": {}, "team_totals": {clean(h): {}, clean(a): {}}}
+            
+            if game.get("bookmakers"):
+                b = game["bookmakers"][0] 
+                bookie_name = b.get("title", "Pinnacle")
+                game_data['bookmaker'] = bookie_name
+                for m in b.get("markets", []):
+                    key = m.get('key')
+                    for o in m.get('outcomes', []):
+                        name_clean = clean(o.get('name'))
+                        if o.get('price') is None: continue
+                        price = Decimal(str(o.get('price')))
+                        point = round(float(o.get('point')), 1) if o.get('point') is not None else None
+                        
+                        if key == 'h2h': game_data["moneyline"][name_clean] = price
+                        elif key == 'h2h_h1': game_data["1h_moneyline"][name_clean] = price
+                        elif key == 'totals' and point is not None:
+                            if point not in game_data["totals"]: game_data["totals"][point] = {}
+                            game_data["totals"][point][name_clean] = price
+                        elif key == 'spreads' and point is not None:
+                            if point not in game_data["spreads"]: game_data["spreads"][point] = {}
+                            game_data["spreads"][point][name_clean] = price
+                        elif key == 'team_totals' and point is not None:
+                            team_desc = clean(o.get('description'))
+                            if team_desc in game_data["team_totals"]:
+                                if point not in game_data["team_totals"][team_desc]: game_data["team_totals"][team_desc][point] = {}
+                                game_data["team_totals"][team_desc][point][name_clean] = price
+                fiat_games[f"{clean(h)}_{clean(a)}"] = game_data
+
+        opportunities = []
+
+        # 2. Iterate and Match (Protecting the API rate limit)
         for game_key, x_data in fiat_games.items():
             home_nick, away_nick = clean(x_data["home"]), clean(x_data["away"])
             fiat_time = x_data["commence_time"]
@@ -126,3 +218,37 @@
                     logger.info(row)
             else:
                 logger.info("   [!] Safely skipped all markets (No matching lines or empty order books).")
+
+        # 3. Top 3 Telegram Sniper using your alerts.py!
+        logger.info("\n" + "="*80)
+        if not opportunities:
+            logger.info("⚖️ Markets efficient. No arbitrage gaps found below 100%.")
+        else:
+            # Sort, deduplicate, and limit to 3
+            unique_arbs = {arb.expected_profit_percent: arb for arb in opportunities}.values()
+            sorted_arbs = sorted(unique_arbs, key=lambda x: x.expected_profit_percent, reverse=True)[:3]
+            
+            logger.info(f"🔥 Found opportunities! Broadcasting Top {len(sorted_arbs)} to Telegram.")
+            
+            # Use your beautiful alerts class to format the string
+            from .alerts import format_opportunity_alert
+            for op in sorted_arbs:
+                msg = format_opportunity_alert(op)
+                logger.info(f"-> Sending Alert: ROI {op.expected_profit_percent}%")
+                clients.send_telegram_alert(msg)
+        logger.info("="*80)
+
+    finally:
+        clients.close()
+
+def _build_opp(x_data, fiat_odds, poly_price, arb_sum, m_title, poly_side, fiat_side):
+    """Helper to cleanly build the ArbitrageOpportunity object for alerts.py"""
+    roi = round(float((1/arb_sum - 1) * 100), 2)
+    edge = round(float((Decimal("1") - arb_sum) * 100), 2)
+    return ArbitrageOpportunity(
+        sport_key="basketball_nba",
+        home_team=x_data['home'], away_team=x_data['away'], commence_time=x_data['commence_time'],
+        market_title=m_title, selection_name=poly_side, bookmaker=x_data.get('bookmaker', 'Pinnacle'),
+        odds_decimal=float(fiat_odds), poly_price=float(poly_price),
+        implied_total=float(arb_sum), edge_percent=edge, expected_profit_percent=roi
+    )
