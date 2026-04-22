@@ -81,8 +81,6 @@ def get_1xbet():
 
 def run_scan():
     print("📡 Initializing Production Multi-Market Scan...")
-    # send_telegram_alert("📡 NBA Arbitrage Scan Started") # Heartbeat notification
-    
     xbet_games = get_1xbet()
     try:
         res = requests.get("https://gamma-api.polymarket.com/events?series_id=10345&active=true&closed=false&limit=100").json()
@@ -105,6 +103,7 @@ def run_scan():
             
             # --- 1. MONEYLINE LOGIC ---
             if m_type == 'moneyline':
+                # Explicitly pull tokens from the specific moneyline market 'm'
                 outcomes = json.loads(m['outcomes']) if isinstance(m['outcomes'], str) else m['outcomes']
                 tokens = json.loads(m['clobTokenIds']) if isinstance(m['clobTokenIds'], str) else m['clobTokenIds']
                 for idx, t_name in enumerate(outcomes):
@@ -118,7 +117,8 @@ def run_scan():
                                 arb_sum = poly_ask + (Decimal("1") / x_data["moneyline"][opp_nick])
                                 if arb_sum < 1:
                                     found_any = True
-                                    send_telegram_alert(f"💰 MONEYLINE ARB: {x_data['home']} vs {x_data['away']}\nProfit: {round(float((1/arb_sum - 1) * 100), 2)}%")
+                                    profit = (1/arb_sum - 1) * 100
+                                    send_telegram_alert(f"💰 MONEYLINE ARB: {x_data['home']} vs {x_data['away']}\nProfit: {round(float(profit), 2)}%")
 
             # --- 2. TOTAL POINTS LOGIC ---
             elif m_type in ['total', 'totals']:
@@ -126,31 +126,40 @@ def run_scan():
                 except: continue
                 
                 if poly_line in x_data["totals"]:
+                    # Explicitly pull tokens from the specific Total points market 'm'
                     raw_outcomes = json.loads(m['outcomes']) if isinstance(m['outcomes'], str) else m['outcomes']
                     raw_tokens = json.loads(m['clobTokenIds']) if isinstance(m['clobTokenIds'], str) else m['clobTokenIds']
                     normalized = [str(o).lower().strip() for o in raw_outcomes]
                     
                     try:
-                        over_token = raw_tokens[normalized.index("over")]
-                        under_token = raw_tokens[normalized.index("under")]
+                        over_idx = normalized.index("over")
+                        under_idx = normalized.index("under")
+                        over_token = raw_tokens[over_idx]
+                        under_token = raw_tokens[under_idx]
                     except: continue
 
                     p_over_ask = get_clob_best_ask(over_token)
                     p_under_ask = get_clob_best_ask(under_token)
                     
                     if p_over_ask:
-                        print(f"Over {poly_line:<30} | {float(x_data['totals'][poly_line].get('under', 0)):<10} | {round(float(p_over_ask)*100, 1)}%")
+                        print(f"Over {poly_line:<30} | {float(x_data['totals'][poly_line].get('over', 0)):<10} | {round(float(p_over_ask)*100, 1)}%")
                         xb_under = x_data["totals"][poly_line].get('under')
-                        if xb_under and (p_over_ask + (Decimal("1") / xb_under)) < 1:
-                            found_any = True
-                            send_telegram_alert(f"🏀 TOTALS ARB: {x_data['home']} OVER {poly_line}")
+                        if xb_under:
+                            arb_sum = p_over_ask + (Decimal("1") / xb_under)
+                            if arb_sum < 1:
+                                found_any = True
+                                profit = (1/arb_sum - 1) * 100
+                                send_telegram_alert(f"🏀 TOTALS ARB: {x_data['home']} OVER {poly_line}\nProfit: {round(float(profit), 2)}%")
 
                     if p_under_ask:
-                        print(f"Under {poly_line:<29} | {float(x_data['totals'][poly_line].get('over', 0)):<10} | {round(float(p_under_ask)*100, 1)}%")
+                        print(f"Under {poly_line:<29} | {float(x_data['totals'][poly_line].get('under', 0)):<10} | {round(float(p_under_ask)*100, 1)}%")
                         xb_over = x_data["totals"][poly_line].get('over')
-                        if xb_over and (p_under_ask + (Decimal("1") / xb_over)) < 1:
-                            found_any = True
-                            send_telegram_alert(f"🏀 TOTALS ARB: {x_data['home']} UNDER {poly_line}")
+                        if xb_over:
+                            arb_sum = p_under_ask + (Decimal("1") / xb_over)
+                            if arb_sum < 1:
+                                found_any = True
+                                profit = (1/arb_sum - 1) * 100
+                                send_telegram_alert(f"🏀 TOTALS ARB: {x_data['home']} UNDER {poly_line}\nProfit: {round(float(profit), 2)}%")
 
     if not found_any: print("\n⚖️ Markets efficient. No gaps found.")
 
