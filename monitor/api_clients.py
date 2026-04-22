@@ -52,7 +52,7 @@ class ApiClients:
         params = {
             "apiKey": self.settings.odds_api_key,
             "regions": "eu,us",
-            "markets": "h2h,totals,spreads,h2h_h1",
+            "markets": "h2h,totals,spreads",
             "bookmakers": "pinnacle",
         }
 
