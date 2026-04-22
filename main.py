@@ -28,6 +28,18 @@ def get_1xbet():
         if isinstance(res, list):
             for game in res:
                 h, a = game['home_team'], game['away_team']
+                
+                # Grab the exact game date from the API
+                raw_time = game.get('commence_time', '')
+                match_date = "Unknown Date"
+                if raw_time:
+                    try:
+                        # Parse API ISO format (e.g., 2026-04-21T22:30:00Z)
+                        dt = datetime.strptime(raw_time, "%Y-%m-%dT%H:%M:%SZ")
+                        match_date = dt.strftime("%B %d")
+                    except:
+                        pass
+
                 if game.get("bookmakers"):
                     b = game["bookmakers"][0] 
                     for m in b.get("markets", []):
@@ -37,7 +49,8 @@ def get_1xbet():
                                 data[key] = {
                                     "decimal_odds": Decimal(str(o['price'])), 
                                     "team": o['name'], 
-                                    "game": f"{h} vs {a}"
+                                    "game": f"{h} vs {a}",
+                                    "date": match_date
                                 }
         return data
     except Exception as e:
@@ -45,7 +58,7 @@ def get_1xbet():
         return {}
 
 def get_poly_best_ask(market, team_name):
-    """Gets the true executable Ask price using Gamma or CLOB Orderbook."""
+    """Gets the true executable Ask price directly from the CLOB Orderbook."""
     try:
         outcomes = json.loads(market.get("outcomes") or "[]")
         token_ids = json.loads(market.get("clobTokenIds") or "[]")
@@ -59,11 +72,6 @@ def get_poly_best_ask(market, team_name):
         if token_id is None:
             return None
 
-        # Fast path: Gamma already exposes top-of-book on market objects
-        if market.get("bestAsk") is not None:
-            return Decimal(str(market["bestAsk"]))
-
-        # Fallback: authoritative CLOB order book
         book = requests.get(
             "https://clob.polymarket.com/book",
             params={"token_id": token_id},
@@ -76,7 +84,6 @@ def get_poly_best_ask(market, team_name):
             
         return Decimal(asks[0]["price"])
     except Exception as e:
-        print(f"❌ CLOB Fetch Error: {e}")
         return None
 
 def get_polymarket():
@@ -88,7 +95,6 @@ def get_polymarket():
         events = res if isinstance(res, list) else res.get('events', [])
         
         for event in events:
-            title = event.get('title', '')
             for m in event.get('markets', []):
                 if m.get('sportsMarketType') == 'moneyline' and m.get('acceptingOrders') == True:
                     outcomes_str = m.get('outcomes', "[]")
@@ -125,20 +131,17 @@ def run_scan():
             print(f"{x_val['team']:<20} | {float(d):<15} | {round(float(p)*100, 1)}%")
             
             game_name = x_val['game']
-            # Find the opponent on 1xBet
             other_x = next((v for k, v in xbet.items() if v['game'] == game_name and v['team'] != x_val['team']), None)
             
             if other_x:
                 opp_d = other_x['decimal_odds']
                 inv_opp_d = Decimal("1") / opp_d
                 
-                # Math from the document: arb_sum = Poly Ask + (1 / Sportsbook Decimal)
                 arb_sum = p + inv_opp_d
                 
                 if arb_sum < Decimal("1"):
                     found_any = True
                     
-                    # Calculate Stakes for a $100 Bankroll
                     B = Decimal("100")
                     poly_stake = B * p / arb_sum
                     book_stake = B * inv_opp_d / arb_sum
@@ -146,11 +149,14 @@ def run_scan():
                     guaranteed_payout = B / arb_sum
                     profit_margin = (guaranteed_payout - B) / B * Decimal("100")
                     
+                    match_date = x_val.get('date', 'Unknown Date')
+                    
                     alert = (
-                        f"💰 ARB FOUND: {game_name}\n"
-                        f"Profit: {round(float(profit_margin), 2)}%\n\n"
-                        f"🔵 Poly: {round(float(poly_stake), 1)}% on '{poly[key]['label']}'\n"
-                        f"🟢 1xBet: {round(float(book_stake), 1)}% on '{other_x['team']}'\n\n"
+                        f"🏀 NBA: {game_name}\n"
+                        f"📅 Match Date: {match_date}\n\n"
+                        f"🔵 Polymarket: Put {round(float(poly_stake), 1)}% of money on '{poly[key]['label']}'\n"
+                        f"🟢 1xBet: Put {round(float(book_stake), 1)}% of money on '{other_x['team']}'\n\n"
+                        f"💰 Total Benefit: {round(float(profit_margin), 2)}%\n\n"
                         f"⏱ Calc Done: {datetime.now(pytz.timezone('America/Toronto')).strftime('%B %d %H:%M et').lower()}"
                     )
                     send_telegram_alert(alert)
