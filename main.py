@@ -5,17 +5,21 @@ from datetime import datetime, timezone
 import pytz
 from decimal import Decimal, getcontext
 
+# Set high precision for decimal arbitrage math
 getcontext().prec = 28
 
+# Secure keys
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 ODDS_API_KEY = os.environ.get("ODDS_API_KEY")
 
 def clean(text):
+    """Normalize team names for matching."""
     text = text.lower().replace("trail blazers", "blazers")
     return text.split()[-1]
 
 def parse_iso8601_to_epoch(time_str):
+    """Robust UTC ISO 8601 parser for temporal alignment."""
     if not time_str: return 0
     t = time_str.replace(" ", "T")
     if t.endswith("+00"): t += ":00" 
@@ -27,16 +31,20 @@ def parse_iso8601_to_epoch(time_str):
         except: return 0
 
 def is_target_single_game(fiat_commence_time, gamma_market):
+    """Temporal Bounding Box logic to filter out Series Winners."""
     t_commence = parse_iso8601_to_epoch(fiat_commence_time)
     poly_game_start_str = gamma_market.get("gameStartTime") or gamma_market.get("eventStartTime")
     poly_end_date_str = gamma_market.get("endDate")
     t_game = parse_iso8601_to_epoch(poly_game_start_str)
     t_end = parse_iso8601_to_epoch(poly_end_date_str)
+
+    # Acceptance: Tip-Off within 4 hours, Resolution within 48 hours of tipoff.
     if t_game > 0 and abs(t_game - t_commence) > 14400: return False
     if t_end > 0 and abs(t_end - t_commence) > (48 * 3600): return False
     return True
 
 def get_clob_best_ask(token_id):
+    """Finds true executable Ask price, bypassing API sorting bugs."""
     if not token_id: return None
     try:
         book = requests.get("https://clob.polymarket.com/book", params={"token_id": token_id}, timeout=10).json()
@@ -46,10 +54,10 @@ def get_clob_best_ask(token_id):
     except: return None
 
 def get_1xbet_exclusive_data():
-    """Dynamically identifies 1xBet's regional key and extracts data."""
+    """Sweeps all global regions to locate 1xBet's active regional key."""
     url = "https://api.the-odds-api.com/v4/sports/basketball_nba/odds"
-    # We check both EU and US-style regions to be absolutely sure we find 1xBet
-    params = {"apiKey": ODDS_API_KEY, "regions": "eu", "markets": "h2h,totals"}
+    # Sweeping all four major regions simultaneously to find 1xBet
+    params = {"apiKey": ODDS_API_KEY, "regions": "eu,us,uk,au", "markets": "h2h,totals"}
     try:
         res = requests.get(url, params=params).json()
         games = {}
@@ -66,7 +74,7 @@ def get_1xbet_exclusive_data():
                 for b in game["bookmakers"]:
                     key = b.get("key", "").lower()
                     found_keys.add(key)
-                    # We look for ANY key that looks like 1xBet to be safe
+                    # Broad search for any 1xBet variant
                     if "onexbet" in key or "1xbet" in key:
                         target_bookie = b
                         break
@@ -83,12 +91,15 @@ def get_1xbet_exclusive_data():
                 games[f"{clean(h)}_{clean(a)}"] = game_data
         
         if not games:
-            print(f"❌ 1xBet NOT FOUND. Available bookmakers in your feed are: {list(found_keys)}")
+            print(f"❌ 1xBet STILL NOT FOUND. Your plan/key cannot see it.")
+            print(f"Available bookies in all regions: {sorted(list(found_keys))}")
         else:
-            print(f"✅ Success! Found {len(games)} games from 1xBet.")
+            print(f"✅ Success! 1xBet found in global sweep. Parsed {len(games)} games.")
             
         return games
-    except: return {}
+    except Exception as e: 
+        print(f"Error fetching data: {e}")
+        return {}
 
 def run_scan():
     print("📡 Initializing 1xBet-Exclusive Arbitrage Node...")
