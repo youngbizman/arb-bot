@@ -161,4 +161,7 @@ def run_scan():
     if not found_any: print("\n⚖️ Markets efficient. No gaps found.")
 
 def send_telegram_alert(message):
-    requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", json={"chat_id": TELEGRAM_CHAT
+    requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", json={"chat_id": TELEGRAM_CHAT_ID, "text": message})
+
+if __name__ == "__main__":
+    run_scan()
