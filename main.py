@@ -47,7 +47,6 @@ def get_clob_best_ask(token_id):
 
 def get_fiat_data():
     url = "https://api.the-odds-api.com/v4/sports/basketball_nba/odds"
-    # Utilizing Pinnacle, the sharpest global bookie that is active on your API key
     params = {"apiKey": ODDS_API_KEY, "regions": "eu,us,uk", "markets": "h2h,totals", "bookmakers": "pinnacle"}
     try:
         res = requests.get(url, params=params).json()
@@ -82,15 +81,14 @@ def run_scan():
         poly_events = res if isinstance(res, list) else res.get('events', [])
     except: poly_events = []
     
-    print("\n--- 📊 LIVE ARBITRAGE TABLE ---")
-    print(f"{'MARKET':<35} | {'PINNACLE':<10} | {'POLY ASK'}")
-    print("-" * 65)
-    
     found_any = False
+    
     for game_key, x_data in xbet_games.items():
         home_nick, away_nick = clean(x_data["home"]), clean(x_data["away"])
         target_event = next((e for e in poly_events if home_nick in e.get('title','').lower() and away_nick in e.get('title','').lower()), None)
         if not target_event: continue
+        
+        game_output = []
         
         for m in target_event.get('markets', []):
             if not m.get('acceptingOrders') or not is_target_single_game(x_data["commence_time"], m): continue
@@ -104,7 +102,10 @@ def run_scan():
                     if p_nick in x_data["moneyline"]:
                         poly_ask = get_clob_best_ask(tokens[idx])
                         if poly_ask:
-                            print(f"{t_name:<35} | {float(x_data['moneyline'][p_nick]):<10} | {round(float(poly_ask)*100, 1)}%")
+                            pin_odds = float(x_data['moneyline'][p_nick])
+                            poly_pct = round(float(poly_ask)*100, 1)
+                            game_output.append(f"   [Moneyline]   {t_name:<18} | Pin: {pin_odds:<5} | Poly: {poly_pct}%")
+                            
                             opp_nick = home_nick if p_nick == away_nick else away_nick
                             if opp_nick in x_data["moneyline"]:
                                 arb_sum = poly_ask + (Decimal("1") / x_data["moneyline"][opp_nick])
@@ -128,7 +129,8 @@ def run_scan():
                     if p_over_ask:
                         xb_under = x_data["totals"][poly_line].get('under')
                         if xb_under:
-                            print(f"Poly OVER / Pin UNDER {poly_line:<12} | {float(xb_under):<10} | {round(float(p_over_ask)*100, 1)}%")
+                            poly_pct = round(float(p_over_ask)*100, 1)
+                            game_output.append(f"   [Total {poly_line}] Poly OVER / Pin UNDER  | Pin: {float(xb_under):<5} | Poly: {poly_pct}%")
                             if (p_over_ask + (Decimal("1") / xb_under)) < 1:
                                 found_any = True
                                 send_telegram_alert(f"🏀 ARB: {x_data['home']} OVER {poly_line}")
@@ -136,12 +138,22 @@ def run_scan():
                     if p_under_ask:
                         xb_over = x_data["totals"][poly_line].get('over')
                         if xb_over:
-                            print(f"Poly UNDER / Pin OVER {poly_line:<12} | {float(xb_over):<10} | {round(float(p_under_ask)*100, 1)}%")
+                            poly_pct = round(float(p_under_ask)*100, 1)
+                            game_output.append(f"   [Total {poly_line}] Poly UNDER / Pin OVER  | Pin: {float(xb_over):<5} | Poly: {poly_pct}%")
                             if (p_under_ask + (Decimal("1") / xb_over)) < 1:
                                 found_any = True
                                 send_telegram_alert(f"🏀 ARB: {x_data['home']} UNDER {poly_line}")
 
-    if not found_any: print("\n⚖️ Markets efficient. No gaps found.")
+        if game_output:
+            print(f"\n🏀 {x_data['home']} vs {x_data['away']}")
+            print("-" * 65)
+            for row in game_output:
+                print(row)
+
+    if not found_any: 
+        print("\n" + "="*65)
+        print("⚖️ Markets efficient. No arbitrage gaps found below 100%.")
+        print("="*65)
 
 def send_telegram_alert(message):
     requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", json={"chat_id": TELEGRAM_CHAT_ID, "text": message})
