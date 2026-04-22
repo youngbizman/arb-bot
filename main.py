@@ -14,25 +14,33 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 ODDS_API_KEY = os.environ.get("ODDS_API_KEY")
 
 def clean(text):
-    """Normalize team names for matching[cite: 1227]."""
+    """Normalize team names for matching."""
     text = text.lower().replace("trail blazers", "blazers")
     return text.split()[-1]
 
 def parse_iso8601_to_epoch(time_str):
-    """Standardized UTC ISO 8601 to Unix epoch converter [cite: 1597-1611]."""
+    """Enhanced parser to handle Polymarket's non-standard date strings."""
     if not time_str: return 0
-    time_str = time_str.replace("Z", "+00:00")
+    
+    # Clean up Polymarket's specific string quirks
+    t = time_str.replace(" ", "T")
+    if t.endswith("+00"): t += ":00" 
+    if t.endswith("Z"): t = t.replace("Z", "+00:00")
+    
     try:
-        dt = datetime.fromisoformat(time_str)
-        return int(dt.timestamp())
-    except ValueError:
-        return 0
+        return int(datetime.fromisoformat(t).timestamp())
+    except:
+        # Fallback for messy strings
+        try:
+            return int(datetime.strptime(t[:19], "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc).timestamp())
+        except:
+            return 0
 
 def is_target_single_game(fiat_commence_time, gamma_market, market_name="Unknown"):
     """
-    Mathematical Deduplication Protocol:
-    Guarantees the market is tonight's specific game using tip-off congruence 
-    and oracle resolution boundaries [cite: 1572-1590, 1612-1650].
+    Revised Temporal Protocol:
+    Allows for slight time discrepancies between bookmakers and Poly,
+    while definitively filtering out Series Winner markets.
     """
     t_commence = parse_iso8601_to_epoch(fiat_commence_time)
     if t_commence == 0: return False
@@ -40,27 +48,28 @@ def is_target_single_game(fiat_commence_time, gamma_market, market_name="Unknown
     poly_game_start_str = gamma_market.get("gameStartTime") or gamma_market.get("eventStartTime")
     poly_end_date_str = gamma_market.get("endDate")
 
-    t_game = parse_iso8601_to_epoch(poly_game_start_str) if poly_game_start_str else 0
-    t_end = parse_iso8601_to_epoch(poly_end_date_str) if poly_end_date_str else 0
+    t_game = parse_iso8601_to_epoch(poly_game_start_str)
+    t_end = parse_iso8601_to_epoch(poly_end_date_str)
 
     print(f"   DEBUG [Temporal Check - {market_name}]:")
     print(f"      - 1xBet Tipoff: {fiat_commence_time} ({t_commence})")
     print(f"      - Poly Start:   {poly_game_start_str} ({t_game})")
     print(f"      - Poly End:     {poly_end_date_str} ({t_end})")
 
-    # 1. Tip-Off Congruence Box: Must tip off within ~2 hours of 1xBet.
+    # 1. Tip-Off Congruence Box: Allow a 4-hour window for different bookie start times.
     if t_game > 0:
         variance = abs(t_game - t_commence)
-        if variance > 7200:
-            print(f"      ❌ REJECTED: Tipoff variance too high ({variance}s > 7200s)")
+        if variance > 14400:
+            print(f"      ❌ REJECTED: Tipoff variance too high ({variance}s > 14400s)")
             return False
         print(f"      ✅ Tipoff congruence passed.")
 
-    # 2. Oracle Resolution Boundary: Single games resolve +4 to +36 hours after tip-off .
+    # 2. Oracle Resolution Boundary: Reject if resolution is more than 48 hours away.
+    # This correctly accepts single games (even with negative delays) and kills Series Winners.
     if t_end > 0:
         oracle_delta = t_end - t_commence
-        if oracle_delta < (4 * 3600) or oracle_delta > (36 * 3600):
-            print(f"      ❌ REJECTED: Oracle delay outside single-game window ({oracle_delta}s)")
+        if abs(oracle_delta) > (48 * 3600):
+            print(f"      ❌ REJECTED: Likely a Series/Future (Delta: {oracle_delta}s)")
             return False
         print(f"      ✅ Oracle resolution window passed.")
 
@@ -72,7 +81,7 @@ def is_target_single_game(fiat_commence_time, gamma_market, market_name="Unknown
     return True
 
 def get_clob_best_ask(token_id):
-    """Bypasses array sorting bugs to find the true executable Ask price [cite: 1150-1153, 1811-1817]."""
+    """Bypasses array sorting bugs to find the true executable Ask price."""
     if not token_id: return None
     try:
         book = requests.get("https://clob.polymarket.com/book", params={"token_id": token_id}, timeout=10).json()
@@ -83,7 +92,7 @@ def get_clob_best_ask(token_id):
         return None
 
 def get_1xbet():
-    """Fetches real NBA Match Winner and Point Totals odds from 1xBet [cite: 1502-1507]."""
+    """Fetches real NBA Match Winner and Point Totals odds from 1xBet."""
     url = "https://api.the-odds-api.com/v4/sports/basketball_nba/odds"
     params = {"apiKey": ODDS_API_KEY, "regions": "eu", "markets": "h2h,totals"}
     try:
@@ -120,7 +129,7 @@ def get_1xbet():
         return {}
 
 def run_scan():
-    print("📡 Initializing Debug Scan...")
+    print("📡 Initializing Temporal Arbitrage Scan...")
     xbet_games = get_1xbet()
     
     try:
@@ -174,9 +183,9 @@ def run_scan():
                                 if arb_sum < Decimal("1"):
                                     found_any = True
                                     profit = (Decimal("1") / arb_sum - Decimal("1")) * 100
-                                    send_telegram_alert(f"💰 ARB: {x_data['home']} vs {x_data['away']}\nProfit: {round(float(profit), 2)}%")
+                                    send_telegram_alert(f"💰 ARB: {x_data['home']} vs {x_data['away']} (Moneyline)\nProfit: {round(float(profit), 2)}%")
 
-            # --- 2. TOTAL POINTS ARBITRAGE [cite: 1653-1688] ---
+            # --- 2. TOTAL POINTS ARBITRAGE ---
             elif m_type in ['total', 'totals']:
                 try: poly_line = float(m.get("line", 0.0))
                 except: continue
@@ -190,12 +199,25 @@ def run_scan():
                         under_token = tokens[outcomes.index("under")]
                     except: continue
 
+                    # Scenario A: Poly Over + 1xBet Under
                     p_over_ask = get_clob_best_ask(over_token)
                     if p_over_ask:
                         inv_under_d = Decimal("1") / x_data["totals"][poly_line]['under']
-                        if (p_over_ask + inv_under_d) < 1:
+                        arb_sum = p_over_ask + inv_under_d
+                        if arb_sum < Decimal("1"):
                             found_any = True
-                            send_telegram_alert(f"🏀 TOTALS: {x_data['home']} Over {poly_line}")
+                            profit = (Decimal("1") / arb_sum - Decimal("1")) * 100
+                            send_telegram_alert(f"🏀 TOTALS ARB: {x_data['home']} (Over {poly_line})\nProfit: {round(float(profit), 2)}%")
+
+                    # Scenario B: Poly Under + 1xBet Over
+                    p_under_ask = get_clob_best_ask(under_token)
+                    if p_under_ask:
+                        inv_over_d = Decimal("1") / x_data["totals"][poly_line]['over']
+                        arb_sum = p_under_ask + inv_over_d
+                        if arb_sum < Decimal("1"):
+                            found_any = True
+                            profit = (Decimal("1") / arb_sum - Decimal("1")) * 100
+                            send_telegram_alert(f"🏀 TOTALS ARB: {x_data['home']} (Under {poly_line})\nProfit: {round(float(profit), 2)}%")
 
     if not found_any: print("\n⚖️ Scan finished. No profitable temporal gaps found.")
 
