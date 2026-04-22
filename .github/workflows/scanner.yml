@@ -1,13 +1,14 @@
 name: Arbitrage Scanner
 
 on:
-  workflow_dispatch: # Manual button
+  workflow_dispatch:
   schedule:
-    - cron: '*/20 * * * *' # Runs every 20 minutes
+    - cron: '*/20 * * * *'
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout Code
         uses: actions/checkout@v3
@@ -18,7 +19,7 @@ jobs:
           python-version: '3.10'
 
       - name: Install Dependencies
-        run: pip install requests pytz
+        run: pip install requests
 
       - name: Run Arbitrage Bot
         env:
