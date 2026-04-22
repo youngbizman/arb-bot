@@ -33,7 +33,7 @@ class Settings:
 def load_settings() -> Settings:
     return Settings(
         odds_api_key=_require_env("ODDS_API_KEY"),
-        telegram_bot_token=_require_env("TELEGRAM_BOT_TOKEN"),
+        telegram_bot_token=_require_env("TELEGRAM_TOKEN"),
         telegram_chat_id=_require_env("TELEGRAM_CHAT_ID"),
         request_timeout_seconds=_get_int("REQUEST_TIMEOUT_SECONDS", 15),
         scan_interval_seconds=_get_int("SCAN_INTERVAL_SECONDS", 60),
