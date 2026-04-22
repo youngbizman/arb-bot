@@ -19,7 +19,7 @@ def clean(text):
     return text.split()[-1]
 
 def parse_iso8601_to_epoch(time_str):
-    """Robust UTC ISO 8601 parser for temporal alignment."""
+    """Robust UTC ISO 8601 parser for temporal alignment [cite: 1371-1379]."""
     if not time_str: return 0
     t = time_str.replace(" ", "T")
     if t.endswith("+00"): t += ":00" 
@@ -31,20 +31,20 @@ def parse_iso8601_to_epoch(time_str):
         except: return 0
 
 def is_target_single_game(fiat_commence_time, gamma_market):
-    """Temporal Bounding Box logic to filter out Series Winners."""
+    """Temporal Bounding Box logic to filter out Series Winners [cite: 1351-1364]."""
     t_commence = parse_iso8601_to_epoch(fiat_commence_time)
     poly_game_start_str = gamma_market.get("gameStartTime") or gamma_market.get("eventStartTime")
     poly_end_date_str = gamma_market.get("endDate")
     t_game = parse_iso8601_to_epoch(poly_game_start_str)
     t_end = parse_iso8601_to_epoch(poly_end_date_str)
 
-    # Allow 4-hour tipoff variance and ensure resolution is within 48 hours of tipoff
+    # Acceptance: Tip-Off within 4 hours, Resolution within 48 hours of tipoff.
     if t_game > 0 and abs(t_game - t_commence) > 14400: return False
     if t_end > 0 and abs(t_end - t_commence) > (48 * 3600): return False
     return True
 
 def get_clob_best_ask(token_id):
-    """Finds true executable Ask price, bypassing CLOB sorting bugs."""
+    """Finds true executable Ask price, bypassing API sorting bugs [cite: 1585-1591]."""
     if not token_id: return None
     try:
         book = requests.get("https://clob.polymarket.com/book", params={"token_id": token_id}, timeout=10).json()
@@ -53,25 +53,20 @@ def get_clob_best_ask(token_id):
         return min(prices) if prices else None
     except: return None
 
-def get_1xbet():
-    """Fetches NBA data explicitly using the 'onexbet' key."""
+def get_odds_data():
+    """Fetches real NBA odds from any available bookmaker to ensure data flow [cite: 1276-1281]."""
     url = "https://api.the-odds-api.com/v4/sports/basketball_nba/odds"
-    # CRITICAL: 'onexbet' is the correct key for 1xBet in the 'eu' region
-    params = {"apiKey": ODDS_API_KEY, "regions": "eu", "markets": "h2h,totals", "bookmakers": "onexbet"}
+    params = {"apiKey": ODDS_API_KEY, "regions": "eu", "markets": "h2h,totals"}
     try:
         res = requests.get(url, params=params).json()
         games = {}
-        if not isinstance(res, list):
-            print(f"DEBUG: 1xBet API response error: {res}")
-            return {}
-        
-        print(f"DEBUG: 1xBet found {len(res)} games.")
+        if not isinstance(res, list): return {}
         for game in res:
             h, a = game['home_team'], game['away_team']
             commence_time = game.get('commence_time', '')
             game_data = {"home": h, "away": a, "commence_time": commence_time, "moneyline": {}, "totals": {}}
-            
             if game.get("bookmakers"):
+                # RESTORED: Take first available bookmaker with live data
                 b = game["bookmakers"][0] 
                 for m in b.get("markets", []):
                     if m['key'] == 'h2h':
@@ -83,23 +78,21 @@ def get_1xbet():
                             game_data["totals"][line][o['name'].lower()] = Decimal(str(o['price']))
             games[f"{clean(h)}_{clean(a)}"] = game_data
         return games
-    except Exception as e:
-        print(f"DEBUG: 1xBet fetch exception: {e}")
-        return {}
+    except: return {}
 
 def run_scan():
     print("📡 Initializing Production Multi-Market Scan...")
-    xbet_games = get_1xbet()
+    xbet_games = get_odds_data()
+    print(f"DEBUG: Found {len(xbet_games)} games from The Odds API.")
     
     try:
         res = requests.get("https://gamma-api.polymarket.com/events?series_id=10345&active=true&closed=false&limit=100").json()
         poly_events = res if isinstance(res, list) else res.get('events', [])
-        print(f"DEBUG: Polymarket found {len(poly_events)} events.")
-    except: 
-        poly_events = []
+        print(f"DEBUG: Found {len(poly_events)} events on Polymarket.")
+    except: poly_events = []
     
     print("\n--- 📊 LIVE MARKET DATA TABLE ---")
-    print(f"{'MARKET (VALIDATED)':<35} | {'1XBET':<10} | {'POLY ASK'}")
+    print(f"{'MARKET (VALIDATED)':<35} | {'BOOKIE':<10} | {'POLY ASK'}")
     print("-" * 65)
     
     found_any = False
@@ -127,43 +120,37 @@ def run_scan():
                                 arb_sum = poly_ask + (Decimal("1") / x_data["moneyline"][opp_nick])
                                 if arb_sum < 1:
                                     found_any = True
-                                    profit = (Decimal("1")/arb_sum - 1) * 100
-                                    send_telegram_alert(f"💰 MONEYLINE ARB: {x_data['home']} vs {x_data['away']}\nProfit: {round(float(profit), 2)}%")
+                                    send_telegram_alert(f"💰 MONEYLINE ARB: {x_data['home']} vs {x_data['away']}\nProfit: {round(float((1/arb_sum - 1) * 100), 2)}%")
 
-            # --- 2. TOTAL POINTS LOGIC ---
+            # --- 2. TOTAL POINTS LOGIC [cite: 1465-1512] ---
             elif m_type in ['total', 'totals']:
                 try: poly_line = round(float(m.get("line", 0.0)), 1)
                 except: continue
-                
                 if poly_line in x_data["totals"]:
                     raw_outcomes = json.loads(m['outcomes']) if isinstance(m['outcomes'], str) else m['outcomes']
                     raw_tokens = json.loads(m['clobTokenIds']) if isinstance(m['clobTokenIds'], str) else m['clobTokenIds']
                     normalized = [str(o).lower().strip() for o in raw_outcomes]
-                    
                     try:
                         over_idx, under_idx = normalized.index("over"), normalized.index("under")
                         over_token, under_token = raw_tokens[over_idx], raw_tokens[under_idx]
                     except: continue
 
                     p_over_ask, p_under_ask = get_clob_best_ask(over_token), get_clob_best_ask(under_token)
-                    
                     if p_over_ask:
                         xb_under = x_data["totals"][poly_line].get('under')
                         if xb_under:
-                            print(f"Poly OVER / 1xBet UNDER {poly_line:<11} | {float(xb_under):<10} | {round(float(p_over_ask)*100, 1)}%")
+                            print(f"Poly OVER / Book UNDER {poly_line:<12} | {float(xb_under):<10} | {round(float(p_over_ask)*100, 1)}%")
                             if (p_over_ask + (Decimal("1") / xb_under)) < 1:
                                 found_any = True
-                                profit = (Decimal("1")/(p_over_ask + (Decimal("1") / xb_under)) - 1) * 100
-                                send_telegram_alert(f"🏀 TOTALS ARB: {x_data['home']} OVER {poly_line}\nProfit: {round(float(profit), 2)}%")
+                                send_telegram_alert(f"🏀 TOTALS ARB: {x_data['home']} OVER {poly_line}")
 
                     if p_under_ask:
                         xb_over = x_data["totals"][poly_line].get('over')
                         if xb_over:
-                            print(f"Poly UNDER / 1xBet OVER {poly_line:<11} | {float(xb_over):<10} | {round(float(p_under_ask)*100, 1)}%")
+                            print(f"Poly UNDER / Book OVER {poly_line:<12} | {float(xb_over):<10} | {round(float(p_under_ask)*100, 1)}%")
                             if (p_under_ask + (Decimal("1") / xb_over)) < 1:
                                 found_any = True
-                                profit = (Decimal("1")/(p_under_ask + (Decimal("1") / xb_over)) - 1) * 100
-                                send_telegram_alert(f"🏀 TOTALS ARB: {x_data['home']} UNDER {poly_line}\nProfit: {round(float(profit), 2)}%")
+                                send_telegram_alert(f"🏀 TOTALS ARB: {x_data['home']} UNDER {poly_line}")
 
     if not found_any: print("\n⚖️ Markets efficient. No gaps found.")
 
