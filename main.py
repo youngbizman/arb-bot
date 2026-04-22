@@ -1,7 +1,6 @@
 import os
 import requests
 import json
-import re
 from datetime import datetime
 import pytz
 from decimal import Decimal, getcontext
@@ -14,9 +13,8 @@ TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 ODDS_API_KEY = os.environ.get("ODDS_API_KEY")
 
-# Strict Playoff Filters based on API Schema diagnostics
-SERIES_SLUG_HINTS = ["who-will-win-series", "total-games", "series-outcome", "champion", "to-win-series", "advance"]
-DATE_SLUG_RE = re.compile(r".*-\d{4}-\d{2}-\d{2}$")
+# Exclude macroscopic series/future markets
+SERIES_SLUG_HINTS = ["series", "total-games", "champion", "advance", "tournament", "finals"]
 
 def clean(text):
     """Extracts the team nickname for perfect matching."""
@@ -30,31 +28,36 @@ def get_1xbet():
     try:
         res = requests.get(url, params=params).json()
         data = {}
-        if isinstance(res, list):
-            for game in res:
-                h, a = game['home_team'], game['away_team']
-                
-                raw_time = game.get('commence_time', '')
-                match_date = "Unknown Date"
-                if raw_time:
-                    try:
-                        dt = datetime.strptime(raw_time, "%Y-%m-%dT%H:%M:%SZ")
-                        match_date = dt.strftime("%B %d")
-                    except:
-                        pass
+        
+        # Check if The Odds API returned an error (e.g., Quota Exceeded)
+        if not isinstance(res, list):
+            print(f"❌ 1xBet API Warning/Error: {json.dumps(res)}")
+            return {}
 
-                if game.get("bookmakers"):
-                    b = game["bookmakers"][0] 
-                    for m in b.get("markets", []):
-                        if m['key'] == 'h2h':
-                            for o in m['outcomes']:
-                                key = f"{clean(o['name'])}-win"
-                                data[key] = {
-                                    "decimal_odds": Decimal(str(o['price'])), 
-                                    "team": o['name'], 
-                                    "game": f"{h} vs {a}",
-                                    "date": match_date
-                                }
+        for game in res:
+            h, a = game['home_team'], game['away_team']
+            
+            raw_time = game.get('commence_time', '')
+            match_date = "Unknown Date"
+            if raw_time:
+                try:
+                    dt = datetime.strptime(raw_time, "%Y-%m-%dT%H:%M:%SZ")
+                    match_date = dt.strftime("%B %d")
+                except:
+                    pass
+
+            if game.get("bookmakers"):
+                b = game["bookmakers"][0] 
+                for m in b.get("markets", []):
+                    if m['key'] == 'h2h':
+                        for o in m['outcomes']:
+                            key = f"{clean(o['name'])}-win"
+                            data[key] = {
+                                "decimal_odds": Decimal(str(o['price'])), 
+                                "team": o['name'], 
+                                "game": f"{h} vs {a}",
+                                "date": match_date
+                            }
         return data
     except Exception as e:
         print(f"❌ 1xBet Fetch Error: {e}")
@@ -100,7 +103,7 @@ def get_poly_best_ask(market, team_name):
         return None
 
 def get_polymarket():
-    """Sniper scan using NBA Moneyline JSON parsing, Playoff filtering, and precise Ask prices."""
+    """Sniper scan using negative keyword exclusions instead of brittle regex."""
     url = "https://gamma-api.polymarket.com/events?series_id=10345&active=true&closed=false&limit=100"
     try:
         res = requests.get(url).json()
@@ -108,7 +111,6 @@ def get_polymarket():
         events = res if isinstance(res, list) else res.get('events', [])
         
         for event in events:
-            # Skip games that are already finished
             if event.get("ended") == True:
                 continue
                 
@@ -116,26 +118,14 @@ def get_polymarket():
                 if m.get('sportsMarketType') != 'moneyline' or not m.get('acceptingOrders'):
                     continue
                 
-                # --- START OF PLAYOFF SERIES FILTERING ---
-                game_id = m.get("gameId")
-                game_start = m.get("gameStartTime")
-                
-                # 1. Reject if no specific game properties exist
-                if not game_id or not game_start:
-                    continue
-                
                 market_slug = (m.get("slug") or "").lower()
+                market_question = (m.get("question") or "").lower()
                 event_slug = (event.get("slug") or "").lower()
-                slug_blob = f"{event_slug} {market_slug}"
+                slug_blob = f"{event_slug} {market_slug} {market_question}"
                 
-                # 2. Reject if slug contains macroscopic series keywords
+                # Reject if the market contains macroscopic series keywords
                 if any(hint in slug_blob for hint in SERIES_SLUG_HINTS):
                     continue
-                
-                # 3. Reject if the slug is not strictly date-stamped for a single match
-                if not (DATE_SLUG_RE.match(market_slug) or DATE_SLUG_RE.match(event_slug)):
-                    continue
-                # --- END OF PLAYOFF SERIES FILTERING ---
 
                 outcomes_str = m.get('outcomes', "[]")
                 outcomes = json.loads(outcomes_str) if isinstance(outcomes_str, str) else outcomes_str
@@ -153,9 +143,13 @@ def get_polymarket():
         return {}
 
 def run_scan():
-    print("📡 Fetching Market Data...")
+    print("📡 Fetching Market Data...\n")
     xbet = get_1xbet()
     poly = get_polymarket()
+    
+    # Diagnostic Logs
+    print(f"✅ 1xBet Teams Parsed: {len(xbet)}")
+    print(f"✅ Polymarket Teams Parsed: {len(poly)}")
     
     print("\n--- 📊 INTERNAL DATA TABLE (REAL ASK PRICES) ---")
     print(f"{'TEAM':<20} | {'1XBET (DECIMAL)':<15} | {'POLY ASK %':<10}")
