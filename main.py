@@ -14,12 +14,12 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 ODDS_API_KEY = os.environ.get("ODDS_API_KEY")
 
 def clean(text):
-    """Normalize team names for matching."""
+    """Normalize team names for matching[cite: 1001]."""
     text = text.lower().replace("trail blazers", "blazers")
     return text.split()[-1]
 
 def parse_iso8601_to_epoch(time_str):
-    """Enhanced parser to handle Polymarket's non-standard date strings [cite: 541-555]."""
+    """Robust UTC ISO 8601 parser for temporal alignment [cite: 1129-1131, 1371-1385]."""
     if not time_str: return 0
     t = time_str.replace(" ", "T")
     if t.endswith("+00"): t += ":00" 
@@ -31,22 +31,20 @@ def parse_iso8601_to_epoch(time_str):
         except: return 0
 
 def is_target_single_game(fiat_commence_time, gamma_market):
-    """Mathematical Deduplication Protocol [cite: 521-534, 556-594]."""
+    """Mathematical Deduplication: Filters out Series Winners [cite: 1325-1365]."""
     t_commence = parse_iso8601_to_epoch(fiat_commence_time)
     poly_game_start_str = gamma_market.get("gameStartTime") or gamma_market.get("eventStartTime")
     poly_end_date_str = gamma_market.get("endDate")
     t_game = parse_iso8601_to_epoch(poly_game_start_str)
     t_end = parse_iso8601_to_epoch(poly_end_date_str)
 
-    # Tip-Off Congruence (4 hour window)
+    # Reject if Tip-Off or Oracle Resolution is way outside the 1xBet window [cite: 1351-1364].
     if t_game > 0 and abs(t_game - t_commence) > 14400: return False
-    # Oracle Resolution Boundary (48 hour window)
     if t_end > 0 and abs(t_end - t_commence) > (48 * 3600): return False
-    
     return True
 
 def get_clob_best_ask(token_id):
-    """Bypasses array sorting bugs to find the true executable Ask price [cite: 755-761]."""
+    """Manual min() selection to bypass CLOB sorting bugs [cite: 1188-1192, 1585-1591]."""
     if not token_id: return None
     try:
         book = requests.get("https://clob.polymarket.com/book", params={"token_id": token_id}, timeout=10).json()
@@ -56,7 +54,7 @@ def get_clob_best_ask(token_id):
     except: return None
 
 def get_1xbet():
-    """Fetches real NBA odds from 1xBet [cite: 447-451]."""
+    """Fetches Moneyline and Totals from The Odds API [cite: 1276-1281]."""
     url = "https://api.the-odds-api.com/v4/sports/basketball_nba/odds"
     params = {"apiKey": ODDS_API_KEY, "regions": "eu", "markets": "h2h,totals"}
     try:
@@ -79,10 +77,10 @@ def get_1xbet():
                             game_data["totals"][line][o['name'].lower()] = Decimal(str(o['price']))
             games[f"{clean(h)}_{clean(a)}"] = game_data
         return games
-    except Exception as e: return {}
+    except: return {}
 
 def run_scan():
-    print("📡 Initializing Production Arbitrage Scan...")
+    print("📡 Initializing Multi-Market Arbitrage Scan...")
     xbet_games = get_1xbet()
     try:
         res = requests.get("https://gamma-api.polymarket.com/events?series_id=10345&active=true&closed=false&limit=100").json()
@@ -90,7 +88,7 @@ def run_scan():
     except: poly_events = []
     
     print("\n--- 📊 LIVE MARKET DATA TABLE ---")
-    print(f"{'GAME (VALIDATED)':<35} | {'1XBET':<10} | {'POLY ASK'}")
+    print(f"{'MARKET (VALIDATED)':<35} | {'1XBET':<10} | {'POLY ASK'}")
     print("-" * 65)
     
     found_any = False
@@ -101,9 +99,10 @@ def run_scan():
         
         for m in target_event.get('markets', []):
             if not m.get('acceptingOrders') or not is_target_single_game(x_data["commence_time"], m): continue
+            m_type = str(m.get('sportsMarketType', '')).lower()
             
-            # Moneyline Logic
-            if m.get('sportsMarketType') == 'moneyline':
+            # --- 1. MONEYLINE LOGIC ---
+            if m_type == 'moneyline':
                 outcomes = json.loads(m['outcomes']) if isinstance(m['outcomes'], str) else m['outcomes']
                 tokens = json.loads(m['clobTokenIds']) if isinstance(m['clobTokenIds'], str) else m['clobTokenIds']
                 for idx, t_name in enumerate(outcomes):
@@ -117,8 +116,42 @@ def run_scan():
                                 arb_sum = poly_ask + (Decimal("1") / x_data["moneyline"][opp_nick])
                                 if arb_sum < 1:
                                     found_any = True
-                                    profit = (1/arb_sum - 1) * 100
-                                    send_telegram_alert(f"💰 ARB: {x_data['home']} vs {x_data['away']}\nProfit: {round(float(profit), 2)}%")
+                                    send_telegram_alert(f"💰 MONEYLINE ARB: {x_data['home']} vs {x_data['away']}\nProfit: {round(float((1/arb_sum - 1) * 100), 2)}%")
+
+            # --- 2. TOTAL POINTS LOGIC [cite: 1431-1516] ---
+            elif m_type in ['total', 'totals']:
+                try: poly_line = float(m.get("line", 0.0))
+                except: continue
+                
+                if poly_line in x_data["totals"]:
+                    raw_outcomes = json.loads(m['outcomes']) if isinstance(m['outcomes'], str) else m['outcomes']
+                    raw_tokens = json.loads(m['clobTokenIds']) if isinstance(m['clobTokenIds'], str) else m['clobTokenIds']
+                    normalized = [str(o).lower().strip() for o in raw_outcomes]
+                    
+                    try:
+                        over_token = raw_tokens[normalized.index("over")]
+                        under_token = raw_tokens[normalized.index("under")]
+                    except: continue
+
+                    # Scenario: Poly Over + 1xBet Under
+                    p_over_ask = get_clob_best_ask(over_token)
+                    if p_over_ask:
+                        xb_under = x_data["totals"][poly_line].get('under')
+                        if xb_under:
+                            arb_sum = p_over_ask + (Decimal("1") / xb_under)
+                            if arb_sum < 1:
+                                found_any = True
+                                send_telegram_alert(f"🏀 TOTALS ARB: {x_data['home']} OVER {poly_line}\nProfit: {round(float((1/arb_sum - 1) * 100), 2)}%")
+
+                    # Scenario: Poly Under + 1xBet Over
+                    p_under_ask = get_clob_best_ask(under_token)
+                    if p_under_ask:
+                        xb_over = x_data["totals"][poly_line].get('over')
+                        if xb_over:
+                            arb_sum = p_under_ask + (Decimal("1") / xb_over)
+                            if arb_sum < 1:
+                                found_any = True
+                                send_telegram_alert(f"🏀 TOTALS ARB: {x_data['home']} UNDER {poly_line}\nProfit: {round(float((1/arb_sum - 1) * 100), 2)}%")
 
     if not found_any: print("\n⚖️ Markets efficient. No gaps found.")
 
