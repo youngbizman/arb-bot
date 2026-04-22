@@ -1,6 +1,7 @@
 import os
 import requests
 import json
+import re
 from datetime import datetime
 import pytz
 from decimal import Decimal, getcontext
@@ -12,6 +13,10 @@ getcontext().prec = 28
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 ODDS_API_KEY = os.environ.get("ODDS_API_KEY")
+
+# Strict Playoff Filters based on API Schema diagnostics
+SERIES_SLUG_HINTS = ["who-will-win-series", "total-games", "series-outcome", "champion", "to-win-series", "advance"]
+DATE_SLUG_RE = re.compile(r".*-\d{4}-\d{2}-\d{2}$")
 
 def clean(text):
     """Extracts the team nickname for perfect matching."""
@@ -80,7 +85,7 @@ def get_poly_best_ask(market, team_name):
         if not asks:
             return None
             
-        # GPT FIX: Never trust array order. Parse all prices and find the mathematical minimum.
+        # Parse all prices and find the mathematical minimum to avoid the 0.99 sorting bug.
         prices = []
         for ask in asks:
             if "price" in ask:
@@ -95,7 +100,7 @@ def get_poly_best_ask(market, team_name):
         return None
 
 def get_polymarket():
-    """Sniper scan using NBA Moneyline JSON parsing and precise Ask prices."""
+    """Sniper scan using NBA Moneyline JSON parsing, Playoff filtering, and precise Ask prices."""
     url = "https://gamma-api.polymarket.com/events?series_id=10345&active=true&closed=false&limit=100"
     try:
         res = requests.get(url).json()
@@ -108,17 +113,40 @@ def get_polymarket():
                 continue
                 
             for m in event.get('markets', []):
-                if m.get('sportsMarketType') == 'moneyline' and m.get('acceptingOrders') == True:
-                    outcomes_str = m.get('outcomes', "[]")
-                    outcomes = json.loads(outcomes_str) if isinstance(outcomes_str, str) else outcomes_str
-                    
-                    if outcomes:
-                        for team_name in outcomes:
-                            team_id = clean(team_name)
-                            best_ask = get_poly_best_ask(m, team_name)
-                            
-                            if best_ask is not None:
-                                data[f"{team_id}-win"] = {"best_ask": best_ask, "label": team_name}
+                if m.get('sportsMarketType') != 'moneyline' or not m.get('acceptingOrders'):
+                    continue
+                
+                # --- START OF PLAYOFF SERIES FILTERING ---
+                game_id = m.get("gameId")
+                game_start = m.get("gameStartTime")
+                
+                # 1. Reject if no specific game properties exist
+                if not game_id or not game_start:
+                    continue
+                
+                market_slug = (m.get("slug") or "").lower()
+                event_slug = (event.get("slug") or "").lower()
+                slug_blob = f"{event_slug} {market_slug}"
+                
+                # 2. Reject if slug contains macroscopic series keywords
+                if any(hint in slug_blob for hint in SERIES_SLUG_HINTS):
+                    continue
+                
+                # 3. Reject if the slug is not strictly date-stamped for a single match
+                if not (DATE_SLUG_RE.match(market_slug) or DATE_SLUG_RE.match(event_slug)):
+                    continue
+                # --- END OF PLAYOFF SERIES FILTERING ---
+
+                outcomes_str = m.get('outcomes', "[]")
+                outcomes = json.loads(outcomes_str) if isinstance(outcomes_str, str) else outcomes_str
+                
+                if outcomes:
+                    for team_name in outcomes:
+                        team_id = clean(team_name)
+                        best_ask = get_poly_best_ask(m, team_name)
+                        
+                        if best_ask is not None:
+                            data[f"{team_id}-win"] = {"best_ask": best_ask, "label": team_name}
         return data
     except Exception as e:
         print(f"❌ Poly Events Error: {e}")
