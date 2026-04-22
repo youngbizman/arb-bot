@@ -53,7 +53,7 @@ class ApiClients:
             "apiKey": self.settings.odds_api_key,
             "regions": "eu,us",
             "markets": "h2h,totals,spreads",
-            "bookmakers": "pinnacle",
+            "bookmakers": "pinnacle,onexbet",
         }
 
         try:
