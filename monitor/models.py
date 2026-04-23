@@ -1,6 +1,5 @@
 from dataclasses import dataclass
 
-
 @dataclass(frozen=True)
 class Game:
     source: str
@@ -40,6 +39,7 @@ class ArbitrageOpportunity:
     commence_time: str
     market_title: str
     selection_name: str
+    fiat_selection: str  # <--- Added this field
     bookmaker: str
     odds_decimal: float
     poly_price: float
