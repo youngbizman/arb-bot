@@ -37,11 +37,11 @@ def format_opportunity_alert(opportunity: ArbitrageOpportunity) -> str:
     return (
         f"🚨 ARBITRAGE SNIPER ALERT 🚨\n\n"
         f"🏀 MATCHUP: {opportunity.home_team} vs {opportunity.away_team}\n"
-        f"📅 DATE: {opportunity.commence_time[:10]}\n"
+        f"📅 DATE: {opportunity.commence_time}\n"
         f"🎯 MARKET: {opportunity.market_title}\n"
         f"💵 PROFIT MARGIN: {opportunity.expected_profit_percent:.2f}%\n\n"
         f"🛠️ HEDGE CALCULATOR ($100 Bankroll):\n"
-        f"▪️ Bet ${fiat_stake:.2f} on {opportunity.bookmaker} ({opportunity.odds_decimal:.2f} Odds)\n"
+        f"▪️ Bet ${fiat_stake:.2f} on '{opportunity.fiat_selection}' at {opportunity.bookmaker} ({opportunity.odds_decimal:.2f})\n"
         f"▪️ Buy ${poly_stake:.2f} of '{opportunity.selection_name}' on Poly (${opportunity.poly_price:.2f})\n\n"
         f"✅ GUARANTEED RETURN: ${guaranteed_payout:.2f}"
     )
