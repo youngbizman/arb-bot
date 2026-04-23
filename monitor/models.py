@@ -26,7 +26,7 @@ class ArbitrageOpportunity:
     bookmaker: str
     odds_decimal: float
     
-    # --- REFACTORED: Professional Financial Metrics ---
+    # --- Professional Financial Metrics ---
     vwap: float
     marginal_price: float
     poly_spend: float
@@ -40,6 +40,30 @@ class ArbitrageOpportunity:
     polymarket_url: str = ""
 
 @dataclass(frozen=True)
+class FiatArbitrageOpportunity:
+    sport_key: str
+    home_team: str
+    away_team: str
+    commence_time: str
+    market_title: str
+    
+    # Bookmaker 1
+    bookmaker_1: str
+    selection_1: str
+    odds_1: float
+    stake_1: float
+    
+    # Bookmaker 2
+    bookmaker_2: str
+    selection_2: str
+    odds_2: float
+    stake_2: float
+    
+    implied_total: float
+    expected_profit_percent: float
+    guaranteed_payout: float
+
+@dataclass(frozen=True)
 class HealthSummary:
     odds_events_seen: int = 0
     polymarket_events_seen: int = 0
@@ -47,3 +71,17 @@ class HealthSummary:
     opportunities_found: int = 0
     parse_errors: int = 0
     request_errors: int = 0
+
+    def __post_init__(self) -> None:
+        fields_to_check = {
+            "odds_events_seen": self.odds_events_seen,
+            "polymarket_events_seen": self.polymarket_events_seen,
+            "matched_pairs": self.matched_pairs,
+            "opportunities_found": self.opportunities_found,
+            "parse_errors": self.parse_errors,
+            "request_errors": self.request_errors,
+        }
+
+        for field_name, value in fields_to_check.items():
+            if value < 0:
+                raise ValueError(f"{field_name} cannot be negative")
