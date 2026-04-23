@@ -24,26 +24,18 @@ def build_alert_messages(
 
 
 def format_opportunity_alert(opportunity: ArbitrageOpportunity) -> str:
-    # --- $100 BANKROLL HEDGE CALCULATOR ---
-    total_investment = 100.0
-    
-    # Calculate guaranteed payout
-    guaranteed_payout = total_investment / opportunity.implied_total
-    
-    # Calculate exact dollar amounts to place on each side
-    fiat_stake = guaranteed_payout / opportunity.odds_decimal
-    poly_stake = guaranteed_payout * opportunity.poly_price
-
+    # --- REFACTORED: Uses precise, pre-calculated VWAP numbers ---
     return (
         f"🚨 ARBITRAGE SNIPER ALERT 🚨\n\n"
         f"🏀 MATCHUP: {opportunity.home_team} vs {opportunity.away_team}\n"
         f"📅 DATE: {opportunity.commence_time}\n"
         f"🎯 MARKET: {opportunity.market_title}\n"
-        f"💵 PROFIT MARGIN: {opportunity.expected_profit_percent:.2f}%\n\n"
-        f"🛠️ HEDGE CALCULATOR ($100 Bankroll):\n"
-        f"▪️ Bet ${fiat_stake:.2f} on '{opportunity.fiat_selection}' at {opportunity.bookmaker} ({opportunity.odds_decimal:.2f})\n"
-        f"▪️ Buy ${poly_stake:.2f} of '{opportunity.selection_name}' on Poly (${opportunity.poly_price:.2f})\n\n"
-        f"✅ GUARANTEED RETURN: ${guaranteed_payout:.2f}"
+        f"💵 NET PROFIT MARGIN: {opportunity.expected_profit_percent:.2f}%\n\n"
+        f"🛠️ EXECUTION CALCULATOR (${opportunity.total_outlay:.2f} Bankroll):\n"
+        f"▪️ Bet ${opportunity.sportsbook_stake:.2f} on '{opportunity.fiat_selection}' at {opportunity.bookmaker} ({opportunity.odds_decimal:.2f})\n"
+        f"▪️ Buy ${opportunity.poly_spend:.2f} of '{opportunity.selection_name}' on Poly (Avg Price: ${opportunity.vwap:.4f})\n"
+        f"▪️ Polymarket Fees: ${opportunity.poly_fees:.2f}\n\n"
+        f"✅ GUARANTEED NET PROFIT: ${opportunity.locked_profit:.2f}"
     )
 
 
