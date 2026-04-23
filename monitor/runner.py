@@ -1,8 +1,10 @@
 import logging
 import json
+from dataclasses import dataclass
+from typing import Iterable, Mapping, Optional
 from datetime import datetime, timezone
 from decimal import Decimal, getcontext
-from zoneinfo import ZoneInfo  # Python 3.9+ standard for timezone handling
+from zoneinfo import ZoneInfo
 
 from .api_clients import ApiClients
 from .config import ConfigError, load_settings
@@ -11,77 +13,148 @@ from .models import ArbitrageOpportunity
 logger = logging.getLogger(__name__)
 getcontext().prec = 28
 
+# --- LIQUIDITY MATH CLASSES ---
+@dataclass(frozen=True)
+class BookLevel:
+    price: Decimal
+    size: Decimal
+
+@dataclass
+class HedgeEstimate:
+    best_ask: Optional[Decimal]
+    shares: Decimal
+    sportsbook_stake: Decimal
+    poly_spend: Decimal
+    poly_fees: Decimal
+    total_outlay: Decimal
+    vwap: Optional[Decimal]
+    marginal_price: Optional[Decimal]
+    locked_profit: Decimal
+    passes_liquidity_filter: bool
+    reject_reason: Optional[str]
+
+def normalize_asks(asks: Iterable[Mapping[str, str]]) -> list[BookLevel]:
+    levels: list[BookLevel] = []
+    for row in asks:
+        try:
+            price, size = Decimal(str(row.get("price", "0"))), Decimal(str(row.get("size", "0")))
+            if size > 0: levels.append(BookLevel(price=price, size=size))
+        except: pass
+    return sorted(levels, key=lambda lvl: lvl.price)
+
+def fee_per_share(price: Decimal, fee_rate: Decimal) -> Decimal:
+    return fee_rate * price * (Decimal("1") - price)
+
+def evaluate_buy_hedge_from_asks(
+    asks: Iterable[Mapping[str, str]], decimal_odds: Decimal, bankroll: str = "100", fee_rate: str = "0.03", max_avg_impact_rel: str = "0.02"
+) -> HedgeEstimate:
+    """Calculates real-world VWAP profitability, accounting for depth and 3% sports fees."""
+    levels = normalize_asks(asks)
+    odds, bankroll_d, fee_r = Decimal(str(decimal_odds)), Decimal(bankroll), Decimal(fee_rate)
+    inv_odds = Decimal("1") / odds
+    eps = Decimal("0.0000000001")
+
+    if not levels:
+        return HedgeEstimate(None, Decimal("0"), Decimal("0"), Decimal("0"), Decimal("0"), Decimal("0"), None, None, Decimal("0"), False, "Empty Orderbook")
+
+    best = levels[0]
+    q = Decimal("0")
+    cost, fees = Decimal("0"), Decimal("0")
+    marginal = None
+    full_bankroll_supported = False
+
+    for lvl in levels:
+        lvl_fee_ps = fee_per_share(lvl.price, fee_r)
+        lvl_all_in_per_share = lvl.price + lvl_fee_ps + inv_odds
+        
+        if lvl_all_in_per_share >= Decimal("1"): break
+        
+        remaining_bankroll = bankroll_d - ((q * inv_odds) + cost + fees)
+        if remaining_bankroll <= eps:
+            full_bankroll_supported = True
+            break
+            
+        affordable_shares = remaining_bankroll / lvl_all_in_per_share
+        take = min(lvl.size, affordable_shares)
+        
+        if take <= 0: break
+        
+        q += take
+        cost += take * lvl.price
+        fees += take * lvl_fee_ps
+        marginal = lvl.price
+        
+        if take < lvl.size:
+            full_bankroll_supported = True
+            break
+
+    total_outlay = cost + fees + (q * inv_odds)
+    if total_outlay >= bankroll_d - eps: full_bankroll_supported = True
+
+    if q <= Decimal("0"):
+        return HedgeEstimate(best.price, Decimal("0"), Decimal("0"), Decimal("0"), Decimal("0"), Decimal("0"), None, None, Decimal("0"), False, "No profitable depth")
+
+    vwap = cost / q
+    locked_profit = q - total_outlay
+    avg_impact_rel = (vwap / best.price) - Decimal("1")
+    reject_reason = None
+
+    if not full_bankroll_supported: reject_reason = "Insufficient depth for $100 bankroll"
+    elif avg_impact_rel > Decimal(max_avg_impact_rel): reject_reason = "Slippage exceeds 2% buffer"
+    elif locked_profit <= 0: reject_reason = "Negative profit after fees & depth"
+
+    return HedgeEstimate(best.price, q, (q / odds), cost, fees, total_outlay, vwap, marginal, locked_profit, (reject_reason is None), reject_reason)
+
 # --- HELPERS ---
 def clean(text: str) -> str:
     if not text: return ""
     return str(text).lower().replace("trail blazers", "blazers").split()[-1]
 
 def format_to_local(iso_str: str) -> str:
-    """Converts UTC ISO string to Toronto (Eastern) Time string."""
     try:
-        # Handle trailing Z or +00:00
         clean_iso = iso_str.replace("Z", "+00:00")
-        utc_dt = datetime.fromisoformat(clean_iso)
-        local_dt = utc_dt.astimezone(ZoneInfo("America/Toronto"))
-        return local_dt.strftime("%Y-%m-%d %I:%M %p")
-    except:
-        return iso_str[:10]  # Fallback to raw date if parsing fails
+        return datetime.fromisoformat(clean_iso).astimezone(ZoneInfo("America/Toronto")).strftime("%Y-%m-%d %I:%M %p")
+    except: return iso_str[:10]
 
 def parse_iso8601_to_epoch(time_str):
-    if not time_str: return 0
-    t = str(time_str).replace(" ", "T")
-    if t.endswith("+00"): t += ":00" 
-    if t.endswith("Z"): t = t.replace("Z", "+00:00")
-    try: return int(datetime.fromisoformat(t).timestamp())
+    try: return int(datetime.fromisoformat(str(time_str).replace(" ", "T").replace("Z", "+00:00")).timestamp())
     except: return 0
 
 def is_target_single_game(fiat_time, poly_start, poly_end):
-    """Temporal Bounding Box: Ensures we match a single game, not a series."""
-    t_f = parse_iso8601_to_epoch(fiat_time)
-    t_s = parse_iso8601_to_epoch(poly_start)
-    t_e = parse_iso8601_to_epoch(poly_end)
+    t_f, t_s, t_e = parse_iso8601_to_epoch(fiat_time), parse_iso8601_to_epoch(poly_start), parse_iso8601_to_epoch(poly_end)
     if t_f == 0: return False
-    
-    # Tip-off Alignment (within 4 hours)
     if t_s > 0 and abs(t_s - t_f) > 14400: return False
-    
-    # Oracle Integrity Filter (EndDate within 48 hours of tip-off)
     if t_e > 0 and (t_e - t_f) > 172800: return False
     return True
 
 # --- MAIN RUNNER ---
 def run() -> None:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
-    try:
-        settings = load_settings()
+    try: settings = load_settings()
     except ConfigError as exc:
-        logger.error(f"Config error: {exc}")
-        return
+        logger.error(f"Config error: {exc}"); return
         
     clients = ApiClients(settings)
     
     try:
-        logger.info("📡 Initializing High-Density Multi-Market Sniper...")
-        raw_odds = clients.get_fiat_data()
-        raw_poly = clients.get_polymarket_events()
+        logger.info("📡 Initializing VWAP-Aware Multi-Market Sniper...")
+        raw_odds, raw_poly = clients.get_fiat_data(), clients.get_polymarket_events()
         
         fiat_games = {}
         for game in raw_odds:
             h, a = game.get('home_team'), game.get('away_team')
             if not h or not a: continue
             k = f"{clean(h)}_{clean(a)}"
-            if k not in fiat_games:
-                fiat_games[k] = {"home": h, "away": a, "time": game.get('commence_time'), "bookies": []}
+            if k not in fiat_games: fiat_games[k] = {"home": h, "away": a, "time": game.get('commence_time'), "bookies": []}
             
             for b in game.get("bookmakers", []):
                 b_data = {"name": b.get("title"), "h2h": {}, "totals": {}, "spreads": {}}
                 for m in b.get("markets", []):
                     mk = m.get('key')
                     for o in m.get('outcomes', []):
-                        nm = clean(o.get('name'))
-                        if o.get('price') is None: continue
-                        pr = Decimal(str(o.get('price')))
-                        pt = round(float(o.get('point', 0)), 1)
+                        nm, pr = clean(o.get('name')), o.get('price')
+                        if pr is None: continue
+                        pr, pt = Decimal(str(pr)), round(float(o.get('point', 0)), 1)
                         if mk == 'h2h': b_data["h2h"][nm] = pr
                         elif mk == 'totals':
                             if pt not in b_data["totals"]: b_data["totals"][pt] = {}
@@ -96,8 +169,7 @@ def run() -> None:
             h_nk, a_nk = clean(x["home"]), clean(x["away"])
             target = next((e for e in raw_poly if h_nk in e.get('title','').lower() and a_nk in e.get('title','').lower()), None)
             
-            if not target or not is_target_single_game(x["time"], target.get("gameStartTime"), target.get("endDate")):
-                continue
+            if not target or not is_target_single_game(x["time"], target.get("gameStartTime"), target.get("endDate")): continue
             
             local_time_str = format_to_local(x['time'])
             logger.info(f"\n🏀 MATCHED: {x['home']} vs {x['away']} | Local Time: {local_time_str}")
@@ -117,17 +189,16 @@ def run() -> None:
                     # --- Attribute 1: Moneyline ---
                     if mt == 'moneyline':
                         for idx, t_nm in enumerate(outs):
-                            p_nk = clean(t_nm)
-                            f_odds = b["h2h"].get(p_nk)
+                            p_nk, f_odds = clean(t_nm), b["h2h"].get(clean(t_nm))
                             if f_odds:
-                                p_ask = clients.get_clob_best_ask(toks[idx])
-                                if p_ask:
-                                    logger.info(f"   [ML] {b['name']:<12} | {t_nm[:10]:<10} | {b['name']}: {float(f_odds):<5} vs Poly {round(float(p_ask)*100,1)}%")
-                                    opp_nk = h_nk if p_nk == a_nk else a_nk
-                                    f_opp = b["h2h"].get(opp_nk)
-                                    if f_opp:
-                                        sm = p_ask + (Decimal("1") / f_opp)
-                                        if sm < 1: opportunities.append(_build_opp(x, b["name"], f_opp, p_ask, sm, "ML", t_nm, opp_nk))
+                                asks = clients.get_clob_asks(toks[idx])
+                                opp_nk = h_nk if p_nk == a_nk else a_nk
+                                f_opp = b["h2h"].get(opp_nk)
+                                if asks and f_opp:
+                                    hedge = evaluate_buy_hedge_from_asks(asks, f_opp)
+                                    logger.info(f"   [ML] {b['name']:<12} | {t_nm[:10]:<10} | {b['name']}: {float(f_opp):<5} | Status: {'✅' if hedge.passes_liquidity_filter else '❌ ' + hedge.reject_reason}")
+                                    if hedge.passes_liquidity_filter:
+                                        opportunities.append(_build_opp(x, b["name"], f_opp, hedge, "ML", t_nm, opp_nk))
 
                     # --- Attribute 2: Totals ---
                     elif mt in ['total', 'totals']:
@@ -137,17 +208,17 @@ def run() -> None:
                             norm = [str(o).lower() for o in outs]
                             if "over" in norm and "under" in norm:
                                 o_idx, u_idx = norm.index("over"), norm.index("under")
-                                p_ov, p_un = clients.get_clob_best_ask(toks[o_idx]), clients.get_clob_best_ask(toks[u_idx])
+                                asks_ov, asks_un = clients.get_clob_asks(toks[o_idx]), clients.get_clob_asks(toks[u_idx])
                                 f_un, f_ov = b["totals"][lne].get('under'), b["totals"][lne].get('over')
                                 
-                                if p_ov and f_un:
-                                    logger.info(f"   [Total {lne}] {b['name']:<12} | OVER vs UNDER | {b['name']}: {float(f_un):<5} vs Poly: {round(float(p_ov)*100,1)}%")
-                                    sm = p_ov + (Decimal("1") / f_un)
-                                    if sm < 1: opportunities.append(_build_opp(x, b["name"], f_un, p_ov, sm, f"Total {lne}", "OVER", "UNDER"))
-                                if p_un and f_ov:
-                                    logger.info(f"   [Total {lne}] {b['name']:<12} | UNDER vs OVER | {b['name']}: {float(f_ov):<5} vs Poly: {round(float(p_un)*100,1)}%")
-                                    sm = p_un + (Decimal("1") / f_ov)
-                                    if sm < 1: opportunities.append(_build_opp(x, b["name"], f_ov, p_un, sm, f"Total {lne}", "UNDER", "OVER"))
+                                if asks_ov and f_un:
+                                    hedge = evaluate_buy_hedge_from_asks(asks_ov, f_un)
+                                    logger.info(f"   [Total {lne}] {b['name']:<12} | OVER vs UNDER | {b['name']}: {float(f_un):<5} | Status: {'✅' if hedge.passes_liquidity_filter else '❌ ' + hedge.reject_reason}")
+                                    if hedge.passes_liquidity_filter: opportunities.append(_build_opp(x, b["name"], f_un, hedge, f"Total {lne}", "OVER", "UNDER"))
+                                if asks_un and f_ov:
+                                    hedge = evaluate_buy_hedge_from_asks(asks_un, f_ov)
+                                    logger.info(f"   [Total {lne}] {b['name']:<12} | UNDER vs OVER | {b['name']}: {float(f_ov):<5} | Status: {'✅' if hedge.passes_liquidity_filter else '❌ ' + hedge.reject_reason}")
+                                    if hedge.passes_liquidity_filter: opportunities.append(_build_opp(x, b["name"], f_ov, hedge, f"Total {lne}", "UNDER", "OVER"))
 
                     # --- Attribute 3: Spreads ---
                     elif mt in ['spread', 'spreads']:
@@ -160,11 +231,12 @@ def run() -> None:
                                 opp_nk = h_nk if p_nk == a_nk else a_nk
                                 f_opp = b["spreads"][inv].get(opp_nk)
                                 if f_opp:
-                                    p_ask = clients.get_clob_best_ask(toks[idx])
-                                    if p_ask:
-                                        logger.info(f"   [Spread {lne}] {b['name']:<12} | {t_nm[:10]} vs {opp_nk[:10]} | {b['name']}: {float(f_opp):<5} vs Poly {round(float(p_ask)*100,1)}%")
-                                        sm = p_ask + (Decimal("1") / f_opp)
-                                        if sm < 1: opportunities.append(_build_opp(x, b["name"], f_opp, p_ask, sm, f"Spread {lne}", t_nm, f"{opp_nk} ({inv})"))
+                                    asks = clients.get_clob_asks(toks[idx])
+                                    if asks:
+                                        hedge = evaluate_buy_hedge_from_asks(asks, f_opp)
+                                        logger.info(f"   [Spread {lne}] {b['name']:<12} | {t_nm[:10]} vs {opp_nk[:10]} | {b['name']}: {float(f_opp):<5} | Status: {'✅' if hedge.passes_liquidity_filter else '❌ ' + hedge.reject_reason}")
+                                        if hedge.passes_liquidity_filter:
+                                            opportunities.append(_build_opp(x, b["name"], f_opp, hedge, f"Spread {lne}", t_nm, f"{opp_nk} ({inv})"))
 
         # --- FINAL SUMMARY ---
         logger.info("\n" + "="*80)
@@ -172,26 +244,22 @@ def run() -> None:
             unq = {o.expected_profit_percent: o for o in opportunities}.values()
             best = sorted(unq, key=lambda i: i.expected_profit_percent, reverse=True)[:3]
             from .alerts import format_opportunity_alert
-            for op in best: 
-                clients.send_telegram_alert(format_opportunity_alert(op))
-            
-            logger.info(f"✅ SCAN COMPLETE: Found {len(opportunities)} total opportunities.")
+            for op in best: clients.send_telegram_alert(format_opportunity_alert(op))
+            logger.info(f"✅ SCAN COMPLETE: Found {len(opportunities)} true liquidity-adjusted opportunities.")
             logger.info(f"🔥 Sent the top {len(best)} most profitable alerts to Telegram.")
         else:
             logger.info("⚖️ SCAN COMPLETE: All bookmakers are currently efficient.")
-            logger.info("❌ No arbitrage gaps found above 0.00% ROI in this cycle.")
+            logger.info("❌ No arbitrage gaps found above 0.00% ROI after fees and slippage in this cycle.")
         logger.info("="*80)
         
-    finally:
-        clients.close()
+    finally: clients.close()
 
-def _build_opp(x, b_nm, f_o, p_p, sm, m_tl, p_sd, f_sd):
-    roi = round(float((1/sm - 1) * 100), 2)
-    local_date = format_to_local(x['time'])
+def _build_opp(x, b_nm, f_o, hedge: HedgeEstimate, m_tl, p_sd, f_sd):
+    roi = round(float((hedge.locked_profit / hedge.total_outlay) * 100), 2) if hedge.total_outlay > 0 else 0.0
     return ArbitrageOpportunity(
-        sport_key="nba", home_team=x['home'], away_team=x['away'], commence_time=local_date,
-        market_title=m_tl, selection_name=p_sd, 
-        fiat_selection=f_sd,  # <--- Now mapping this name correctly
-        bookmaker=b_nm, odds_decimal=float(f_o),
-        poly_price=float(p_p), implied_total=float(sm), edge_percent=0.0, expected_profit_percent=roi
+        sport_key="nba", home_team=x['home'], away_team=x['away'], commence_time=format_to_local(x['time']),
+        market_title=m_tl, selection_name=p_sd, fiat_selection=f_sd, bookmaker=b_nm, odds_decimal=float(f_o),
+        vwap=float(hedge.vwap or 0), marginal_price=float(hedge.marginal_price or 0), 
+        poly_spend=float(hedge.poly_spend), poly_fees=float(hedge.poly_fees), sportsbook_stake=float(hedge.sportsbook_stake),
+        total_outlay=float(hedge.total_outlay), locked_profit=float(hedge.locked_profit), expected_profit_percent=roi
     )
