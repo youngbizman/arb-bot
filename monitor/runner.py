@@ -187,10 +187,11 @@ def run() -> None:
 
 def _build_opp(x, b_nm, f_o, p_p, sm, m_tl, p_sd, f_sd):
     roi = round(float((1/sm - 1) * 100), 2)
-    # Ensure the alert also uses the localized date
     local_date = format_to_local(x['time'])
     return ArbitrageOpportunity(
         sport_key="nba", home_team=x['home'], away_team=x['away'], commence_time=local_date,
-        market_title=m_tl, selection_name=p_sd, bookmaker=b_nm, odds_decimal=float(f_o),
+        market_title=m_tl, selection_name=p_sd, 
+        fiat_selection=f_sd,  # <--- Now mapping this name correctly
+        bookmaker=b_nm, odds_decimal=float(f_o),
         poly_price=float(p_p), implied_total=float(sm), edge_percent=0.0, expected_profit_percent=roi
     )
