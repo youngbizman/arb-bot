@@ -1,5 +1,5 @@
 from __future__ import annotations
-from .models import ArbitrageOpportunity
+from .models import ArbitrageOpportunity, FiatArbitrageOpportunity
 
 def build_alert_messages(
     opportunities: list[ArbitrageOpportunity],
@@ -22,7 +22,6 @@ def build_alert_messages(
 
     return list(unique_messages.values())[:limit]
 
-
 def format_opportunity_alert(opportunity: ArbitrageOpportunity) -> str:
     # --- REFACTORED: Uses precise, pre-calculated VWAP numbers ---
     return (
@@ -38,6 +37,18 @@ def format_opportunity_alert(opportunity: ArbitrageOpportunity) -> str:
         f"✅ GUARANTEED NET PROFIT: ${opportunity.locked_profit:.2f}"
     )
 
+def format_fiat_opportunity_alert(opportunity: FiatArbitrageOpportunity) -> str:
+    return (
+        f"🚨 TRADITIONAL FIAT ARB ALERT 🚨\n\n"
+        f"🏀 MATCHUP: {opportunity.home_team} vs {opportunity.away_team}\n"
+        f"📅 DATE: {opportunity.commence_time}\n"
+        f"🎯 MARKET: {opportunity.market_title}\n"
+        f"💵 NET PROFIT MARGIN: {opportunity.expected_profit_percent:.2f}%\n\n"
+        f"🛠️ HEDGE CALCULATOR ($100 Bankroll):\n"
+        f"▪️ Bet ${opportunity.stake_1:.2f} on '{opportunity.selection_1}' at {opportunity.bookmaker_1} ({opportunity.odds_1:.2f})\n"
+        f"▪️ Bet ${opportunity.stake_2:.2f} on '{opportunity.selection_2}' at {opportunity.bookmaker_2} ({opportunity.odds_2:.2f})\n\n"
+        f"✅ GUARANTEED RETURN: ${opportunity.guaranteed_payout:.2f}"
+    )
 
 def build_no_opportunities_message() -> str:
     return "⚖️ Markets efficient. No arbitrage gaps found below 100%."
