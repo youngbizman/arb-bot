@@ -36,9 +36,9 @@ class ApiClients:
         url = "https://api.the-odds-api.com/v4/sports/basketball_nba/odds"
         params = {
             "apiKey": self.settings.odds_api_key,
-            "regions": "eu,us,uk",
+            "regions": "eu,us",
             "markets": "h2h,totals,spreads",
-            "bookmakers": "pinnacle,onexbet,betway",
+            "bookmakers": "pinnacle,onexbet,draftkings",
         }
         try:
             data = self._get_json(url, params=params)
