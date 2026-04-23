@@ -2,6 +2,7 @@ import logging
 import json
 from datetime import datetime, timezone
 from decimal import Decimal, getcontext
+from zoneinfo import ZoneInfo  # Python 3.9+ standard for timezone handling
 
 from .api_clients import ApiClients
 from .config import ConfigError, load_settings
@@ -10,9 +11,21 @@ from .models import ArbitrageOpportunity
 logger = logging.getLogger(__name__)
 getcontext().prec = 28
 
+# --- HELPERS ---
 def clean(text: str) -> str:
     if not text: return ""
     return str(text).lower().replace("trail blazers", "blazers").split()[-1]
+
+def format_to_local(iso_str: str) -> str:
+    """Converts UTC ISO string to Toronto (Eastern) Time string."""
+    try:
+        # Handle trailing Z or +00:00
+        clean_iso = iso_str.replace("Z", "+00:00")
+        utc_dt = datetime.fromisoformat(clean_iso)
+        local_dt = utc_dt.astimezone(ZoneInfo("America/Toronto"))
+        return local_dt.strftime("%Y-%m-%d %I:%M %p")
+    except:
+        return iso_str[:10]  # Fallback to raw date if parsing fails
 
 def parse_iso8601_to_epoch(time_str):
     if not time_str: return 0
@@ -23,7 +36,7 @@ def parse_iso8601_to_epoch(time_str):
     except: return 0
 
 def is_target_single_game(fiat_time, poly_start, poly_end):
-    """Temporal Bounding Box: Ensures we are matching a single game, not a series."""
+    """Temporal Bounding Box: Ensures we match a single game, not a series."""
     t_f = parse_iso8601_to_epoch(fiat_time)
     t_s = parse_iso8601_to_epoch(poly_start)
     t_e = parse_iso8601_to_epoch(poly_end)
@@ -36,6 +49,7 @@ def is_target_single_game(fiat_time, poly_start, poly_end):
     if t_e > 0 and (t_e - t_f) > 172800: return False
     return True
 
+# --- MAIN RUNNER ---
 def run() -> None:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     try:
@@ -82,11 +96,11 @@ def run() -> None:
             h_nk, a_nk = clean(x["home"]), clean(x["away"])
             target = next((e for e in raw_poly if h_nk in e.get('title','').lower() and a_nk in e.get('title','').lower()), None)
             
-            # Check Oracle Integrity/Temporal Bounding Box before matching
             if not target or not is_target_single_game(x["time"], target.get("gameStartTime"), target.get("endDate")):
                 continue
             
-            logger.info(f"\n🏀 MATCHED: {x['home']} vs {x['away']}")
+            local_time_str = format_to_local(x['time'])
+            logger.info(f"\n🏀 MATCHED: {x['home']} vs {x['away']} | Local Time: {local_time_str}")
             logger.info("-" * 80)
             
             for b in x["bookies"]:
@@ -108,16 +122,14 @@ def run() -> None:
                             if f_odds:
                                 p_ask = clients.get_clob_best_ask(toks[idx])
                                 if p_ask:
-                                    # Unconditional Logging
-                                    logger.info(f"   [ML] {b['name']:<12} | {t_nm[:10]:<10} | Price: {float(f_odds):<5} vs Poly {round(float(p_ask)*100,1)}%")
+                                    logger.info(f"   [ML] {b['name']:<12} | {t_nm[:10]:<10} | {b['name']}: {float(f_odds):<5} vs Poly {round(float(p_ask)*100,1)}%")
                                     opp_nk = h_nk if p_nk == a_nk else a_nk
                                     f_opp = b["h2h"].get(opp_nk)
                                     if f_opp:
-                                        # (1 / DecimalOdds) + PolyPrice < 1.0
                                         sm = p_ask + (Decimal("1") / f_opp)
                                         if sm < 1: opportunities.append(_build_opp(x, b["name"], f_opp, p_ask, sm, "ML", t_nm, opp_nk))
 
-                    # --- Attribute 2: Totals (Inverse Mapping) ---
+                    # --- Attribute 2: Totals ---
                     elif mt in ['total', 'totals']:
                         try: lne = round(float(m.get("line", 0)), 1)
                         except: continue
@@ -125,24 +137,23 @@ def run() -> None:
                             norm = [str(o).lower() for o in outs]
                             if "over" in norm and "under" in norm:
                                 o_idx, u_idx = norm.index("over"), norm.index("under")
-                                p_ov = clients.get_clob_best_ask(toks[o_idx])
-                                p_un = clients.get_clob_best_ask(toks[u_idx])
+                                p_ov, p_un = clients.get_clob_best_ask(toks[o_idx]), clients.get_clob_best_ask(toks[u_idx])
                                 f_un, f_ov = b["totals"][lne].get('under'), b["totals"][lne].get('over')
                                 
                                 if p_ov and f_un:
-                                    logger.info(f"   [Total {lne}] {b['name']:<12} | OVER vs UNDER | Pin: {float(f_un):<5} vs Poly: {round(float(p_ov)*100,1)}%")
+                                    logger.info(f"   [Total {lne}] {b['name']:<12} | OVER vs UNDER | {b['name']}: {float(f_un):<5} vs Poly: {round(float(p_ov)*100,1)}%")
                                     sm = p_ov + (Decimal("1") / f_un)
                                     if sm < 1: opportunities.append(_build_opp(x, b["name"], f_un, p_ov, sm, f"Total {lne}", "OVER", "UNDER"))
                                 if p_un and f_ov:
-                                    logger.info(f"   [Total {lne}] {b['name']:<12} | UNDER vs OVER | Pin: {float(f_ov):<5} vs Poly: {round(float(p_un)*100,1)}%")
+                                    logger.info(f"   [Total {lne}] {b['name']:<12} | UNDER vs OVER | {b['name']}: {float(f_ov):<5} vs Poly: {round(float(p_un)*100,1)}%")
                                     sm = p_un + (Decimal("1") / f_ov)
                                     if sm < 1: opportunities.append(_build_opp(x, b["name"], f_ov, p_un, sm, f"Total {lne}", "UNDER", "OVER"))
 
-                    # --- Attribute 3: Spreads (Inverse Handicap) ---
+                    # --- Attribute 3: Spreads ---
                     elif mt in ['spread', 'spreads']:
                         try: lne = round(float(m.get("line", 0)), 1)
                         except: continue
-                        inv = -lne # Inverse line matching (e.g. -1.5 matches +1.5)
+                        inv = -lne
                         if inv in b["spreads"]:
                             for idx, t_nm in enumerate(outs):
                                 p_nk = clean(t_nm)
@@ -151,14 +162,13 @@ def run() -> None:
                                 if f_opp:
                                     p_ask = clients.get_clob_best_ask(toks[idx])
                                     if p_ask:
-                                        logger.info(f"   [Spread {lne}] {b['name']:<12} | {t_nm[:10]} vs {opp_nk[:10]} | Pin: {float(f_opp):<5} vs Poly {round(float(p_ask)*100,1)}%")
+                                        logger.info(f"   [Spread {lne}] {b['name']:<12} | {t_nm[:10]} vs {opp_nk[:10]} | {b['name']}: {float(f_opp):<5} vs Poly {round(float(p_ask)*100,1)}%")
                                         sm = p_ask + (Decimal("1") / f_opp)
                                         if sm < 1: opportunities.append(_build_opp(x, b["name"], f_opp, p_ask, sm, f"Spread {lne}", t_nm, f"{opp_nk} ({inv})"))
 
-        # --- FINAL SUMMARY LOGGING ---
+        # --- FINAL SUMMARY ---
         logger.info("\n" + "="*80)
         if opportunities:
-            # Filter and sort by highest ROI
             unq = {o.expected_profit_percent: o for o in opportunities}.values()
             best = sorted(unq, key=lambda i: i.expected_profit_percent, reverse=True)[:3]
             from .alerts import format_opportunity_alert
@@ -176,10 +186,11 @@ def run() -> None:
         clients.close()
 
 def _build_opp(x, b_nm, f_o, p_p, sm, m_tl, p_sd, f_sd):
-    """Helper to structure valid arbitrage data for alerting."""
     roi = round(float((1/sm - 1) * 100), 2)
+    # Ensure the alert also uses the localized date
+    local_date = format_to_local(x['time'])
     return ArbitrageOpportunity(
-        sport_key="nba", home_team=x['home'], away_team=x['away'], commence_time=x['time'],
+        sport_key="nba", home_team=x['home'], away_team=x['away'], commence_time=local_date,
         market_title=m_tl, selection_name=p_sd, bookmaker=b_nm, odds_decimal=float(f_o),
         poly_price=float(p_p), implied_total=float(sm), edge_percent=0.0, expected_profit_percent=roi
     )
