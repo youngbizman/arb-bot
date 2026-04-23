@@ -144,18 +144,22 @@ def run() -> None:
                                         sm = p_ask + (Decimal("1") / f_opp)
                                         if sm < 1: opportunities.append(_build_opp(x, b["name"], f_opp, p_ask, sm, f"Spread {lne}", t_nm, f"{opp_nk} ({inv})"))
 
+        # --- FINAL SUMMARY LOGGING ---
         logger.info("\n" + "="*80)
         if opportunities:
-            # Sorting Top 3 Sniper [cite: 614, 615]
+            # Sorting Top 3 Sniper
             unq = {o.expected_profit_percent: o for o in opportunities}.values()
             best = sorted(unq, key=lambda i: i.expected_profit_percent, reverse=True)[:3]
             from .alerts import format_opportunity_alert
-            for op in best: clients.send_telegram_alert(format_opportunity_alert(op))
-            logger.info(f"🔥 Found {len(unq)} unique opportunities. Sent top {len(best)} to Telegram.")
+            for op in best: 
+                clients.send_telegram_alert(format_opportunity_alert(op))
+            
+            logger.info(f"✅ SCAN COMPLETE: Found {len(opportunities)} total opportunities.")
+            logger.info(f"🔥 Sent the top {len(best)} most profitable alerts to Telegram.")
         else:
-            logger.info("⚖️ Markets efficient across all bookmakers. No arbitrage gaps found below 100%.")
+            logger.info("⚖️ SCAN COMPLETE: All bookmakers are currently efficient.")
+            logger.info("❌ No arbitrage gaps found above 0.00% ROI in this cycle.")
         logger.info("="*80)
-    finally: clients.close()
 
 def _build_opp(x, b_nm, f_o, p_p, sm, m_tl, p_sd, f_sd):
     roi = round(float((1/sm - 1) * 100), 2)
