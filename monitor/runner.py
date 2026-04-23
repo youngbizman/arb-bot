@@ -23,20 +23,27 @@ def parse_iso8601_to_epoch(time_str):
     except: return 0
 
 def is_target_single_game(fiat_time, poly_start, poly_end):
+    """Temporal Bounding Box: Ensures we are matching a single game, not a series."""
     t_f = parse_iso8601_to_epoch(fiat_time)
     t_s = parse_iso8601_to_epoch(poly_start)
     t_e = parse_iso8601_to_epoch(poly_end)
     if t_f == 0: return False
-    # Tip-off Alignment & Series Filter (Temporal Bounding Box)
-    if t_s > 0 and abs(t_s - t_f) > 14400: return False # [cite: 488]
-    if t_e > 0 and (t_e - t_f) > 172800: return False # [cite: 495]
+    
+    # Tip-off Alignment (within 4 hours)
+    if t_s > 0 and abs(t_s - t_f) > 14400: return False
+    
+    # Oracle Integrity Filter (EndDate within 48 hours of tip-off)
+    if t_e > 0 and (t_e - t_f) > 172800: return False
     return True
 
 def run() -> None:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
-    try: settings = load_settings()
+    try:
+        settings = load_settings()
     except ConfigError as exc:
-        logger.error(f"Config error: {exc}"); return
+        logger.error(f"Config error: {exc}")
+        return
+        
     clients = ApiClients(settings)
     
     try:
@@ -64,7 +71,7 @@ def run() -> None:
                         if mk == 'h2h': b_data["h2h"][nm] = pr
                         elif mk == 'totals':
                             if pt not in b_data["totals"]: b_data["totals"][pt] = {}
-                            b_data["totals"][pt][nm] = pr
+                            b_data["totals"][pt][nm.lower()] = pr
                         elif mk == 'spreads':
                             if pt not in b_data["spreads"]: b_data["spreads"][pt] = {}
                             b_data["spreads"][pt][nm] = pr
@@ -74,7 +81,10 @@ def run() -> None:
         for gk, x in fiat_games.items():
             h_nk, a_nk = clean(x["home"]), clean(x["away"])
             target = next((e for e in raw_poly if h_nk in e.get('title','').lower() and a_nk in e.get('title','').lower()), None)
-            if not target or not is_target_single_game(x["time"], target.get("gameStartTime"), target.get("endDate")): continue
+            
+            # Check Oracle Integrity/Temporal Bounding Box before matching
+            if not target or not is_target_single_game(x["time"], target.get("gameStartTime"), target.get("endDate")):
+                continue
             
             logger.info(f"\n🏀 MATCHED: {x['home']} vs {x['away']}")
             logger.info("-" * 80)
@@ -90,7 +100,7 @@ def run() -> None:
                     except: continue
                     if not outs or len(outs) != len(toks): continue
 
-                    # Attribute 1: Moneyline [cite: 501]
+                    # --- Attribute 1: Moneyline ---
                     if mt == 'moneyline':
                         for idx, t_nm in enumerate(outs):
                             p_nk = clean(t_nm)
@@ -98,16 +108,16 @@ def run() -> None:
                             if f_odds:
                                 p_ask = clients.get_clob_best_ask(toks[idx])
                                 if p_ask:
-                                    # Always print log [cite: 605]
+                                    # Unconditional Logging
                                     logger.info(f"   [ML] {b['name']:<12} | {t_nm[:10]:<10} | Price: {float(f_odds):<5} vs Poly {round(float(p_ask)*100,1)}%")
                                     opp_nk = h_nk if p_nk == a_nk else a_nk
                                     f_opp = b["h2h"].get(opp_nk)
                                     if f_opp:
-                                        # Arbitrage Formula [cite: 570]
+                                        # (1 / DecimalOdds) + PolyPrice < 1.0
                                         sm = p_ask + (Decimal("1") / f_opp)
                                         if sm < 1: opportunities.append(_build_opp(x, b["name"], f_opp, p_ask, sm, "ML", t_nm, opp_nk))
 
-                    # Attribute 2: Totals (Over vs Under) [cite: 508, 514]
+                    # --- Attribute 2: Totals (Inverse Mapping) ---
                     elif mt in ['total', 'totals']:
                         try: lne = round(float(m.get("line", 0)), 1)
                         except: continue
@@ -115,7 +125,8 @@ def run() -> None:
                             norm = [str(o).lower() for o in outs]
                             if "over" in norm and "under" in norm:
                                 o_idx, u_idx = norm.index("over"), norm.index("under")
-                                p_ov, p_un = clients.get_clob_best_ask(toks[o_idx]), clients.get_clob_best_ask(toks[u_idx])
+                                p_ov = clients.get_clob_best_ask(toks[o_idx])
+                                p_un = clients.get_clob_best_ask(toks[u_idx])
                                 f_un, f_ov = b["totals"][lne].get('under'), b["totals"][lne].get('over')
                                 
                                 if p_ov and f_un:
@@ -127,11 +138,11 @@ def run() -> None:
                                     sm = p_un + (Decimal("1") / f_ov)
                                     if sm < 1: opportunities.append(_build_opp(x, b["name"], f_ov, p_un, sm, f"Total {lne}", "UNDER", "OVER"))
 
-                    # Attribute 3: Spreads (Inverse Handicap) [cite: 517, 522]
+                    # --- Attribute 3: Spreads (Inverse Handicap) ---
                     elif mt in ['spread', 'spreads']:
                         try: lne = round(float(m.get("line", 0)), 1)
                         except: continue
-                        inv = -lne
+                        inv = -lne # Inverse line matching (e.g. -1.5 matches +1.5)
                         if inv in b["spreads"]:
                             for idx, t_nm in enumerate(outs):
                                 p_nk = clean(t_nm)
@@ -147,7 +158,7 @@ def run() -> None:
         # --- FINAL SUMMARY LOGGING ---
         logger.info("\n" + "="*80)
         if opportunities:
-            # Sorting Top 3 Sniper
+            # Filter and sort by highest ROI
             unq = {o.expected_profit_percent: o for o in opportunities}.values()
             best = sorted(unq, key=lambda i: i.expected_profit_percent, reverse=True)[:3]
             from .alerts import format_opportunity_alert
@@ -160,8 +171,12 @@ def run() -> None:
             logger.info("⚖️ SCAN COMPLETE: All bookmakers are currently efficient.")
             logger.info("❌ No arbitrage gaps found above 0.00% ROI in this cycle.")
         logger.info("="*80)
+        
+    finally:
+        clients.close()
 
 def _build_opp(x, b_nm, f_o, p_p, sm, m_tl, p_sd, f_sd):
+    """Helper to structure valid arbitrage data for alerting."""
     roi = round(float((1/sm - 1) * 100), 2)
     return ArbitrageOpportunity(
         sport_key="nba", home_team=x['home'], away_team=x['away'], commence_time=x['time'],
