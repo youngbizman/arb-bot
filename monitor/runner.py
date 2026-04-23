@@ -20,140 +20,147 @@ def parse_iso8601_to_epoch(time_str):
     if t.endswith("+00"): t += ":00" 
     if t.endswith("Z"): t = t.replace("Z", "+00:00")
     try: return int(datetime.fromisoformat(t).timestamp())
-    except ValueError:
-        try: return int(datetime.strptime(t[:19], "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc).timestamp())
-        except ValueError: return 0
+    except: return 0
 
-def is_target_single_game(fiat_commence_time, poly_start, poly_end):
-    t_commence = parse_iso8601_to_epoch(fiat_commence_time)
-    t_game = parse_iso8601_to_epoch(poly_start)
-    t_end = parse_iso8601_to_epoch(poly_end)
-    if t_commence == 0: return False
-    if t_game > 0 and abs(t_game - t_commence) > 14400: return False
-    if t_end > 0 and abs(t_end - t_commence) > (48 * 3600): return False
+def is_target_single_game(fiat_time, poly_start, poly_end):
+    t_f = parse_iso8601_to_epoch(fiat_time)
+    t_s = parse_iso8601_to_epoch(poly_start)
+    t_e = parse_iso8601_to_epoch(poly_end)
+    if t_f == 0: return False
+    # Tip-off Alignment & Series Filter (Temporal Bounding Box)
+    if t_s > 0 and abs(t_s - t_f) > 14400: return False # [cite: 488]
+    if t_e > 0 and (t_e - t_f) > 172800: return False # [cite: 495]
     return True
 
 def run() -> None:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
-
-    try:
-        settings = load_settings()
+    try: settings = load_settings()
     except ConfigError as exc:
-        logger.error(f"Configuration error: {exc}")
-        return
-
+        logger.error(f"Config error: {exc}"); return
     clients = ApiClients(settings)
     
     try:
         logger.info("📡 Initializing High-Density Multi-Market Sniper...")
-        raw_odds_data = clients.get_fiat_data()
-        raw_poly_events = clients.get_polymarket_events()
+        raw_odds = clients.get_fiat_data()
+        raw_poly = clients.get_polymarket_events()
         
-        # --- MULTI-BOOKMAKER PARSING ---
         fiat_games = {}
-        for game in raw_odds_data:
+        for game in raw_odds:
             h, a = game.get('home_team'), game.get('away_team')
             if not h or not a: continue
-            commence_time = game.get('commence_time', '')
-            game_key = f"{clean(h)}_{clean(a)}"
+            k = f"{clean(h)}_{clean(a)}"
+            if k not in fiat_games:
+                fiat_games[k] = {"home": h, "away": a, "time": game.get('commence_time'), "bookies": []}
             
-            if game_key not in fiat_games:
-                fiat_games[game_key] = {"home": h, "away": a, "commence_time": commence_time, "bookmakers": []}
-            
-            # Loop through ALL bookmakers provided by the API
             for b in game.get("bookmakers", []):
-                bookie_name = b.get("title", "Unknown")
-                b_data = {"name": bookie_name, "moneyline": {}, "totals": {}, "spreads": {}}
-                
+                b_data = {"name": b.get("title"), "h2h": {}, "totals": {}, "spreads": {}}
                 for m in b.get("markets", []):
-                    key = m.get('key')
+                    mk = m.get('key')
                     for o in m.get('outcomes', []):
-                        name_clean = clean(o.get('name'))
+                        nm = clean(o.get('name'))
                         if o.get('price') is None: continue
-                        price = Decimal(str(o.get('price')))
-                        point = round(float(o.get('point')), 1) if o.get('point') is not None else None
-                        
-                        if key == 'h2h': b_data["moneyline"][name_clean] = price
-                        elif key == 'totals' and point is not None:
-                            if point not in b_data["totals"]: b_data["totals"][point] = {}
-                            b_data["totals"][point][name_clean] = price
-                        elif key == 'spreads' and point is not None:
-                            if point not in b_data["spreads"]: b_data["spreads"][point] = {}
-                            b_data["spreads"][point][name_clean] = price
-                
-                fiat_games[game_key]["bookmakers"].append(b_data)
+                        pr = Decimal(str(o.get('price')))
+                        pt = round(float(o.get('point', 0)), 1)
+                        if mk == 'h2h': b_data["h2h"][nm] = pr
+                        elif mk == 'totals':
+                            if pt not in b_data["totals"]: b_data["totals"][pt] = {}
+                            b_data["totals"][pt][nm] = pr
+                        elif mk == 'spreads':
+                            if pt not in b_data["spreads"]: b_data["spreads"][pt] = {}
+                            b_data["spreads"][pt][nm] = pr
+                fiat_games[k]["bookies"].append(b_data)
 
         opportunities = []
-
-        for game_key, x_data in fiat_games.items():
-            home_nick, away_nick = clean(x_data["home"]), clean(x_data["away"])
-            fiat_time = x_data["commence_time"]
+        for gk, x in fiat_games.items():
+            h_nk, a_nk = clean(x["home"]), clean(x["away"])
+            target = next((e for e in raw_poly if h_nk in e.get('title','').lower() and a_nk in e.get('title','').lower()), None)
+            if not target or not is_target_single_game(x["time"], target.get("gameStartTime"), target.get("endDate")): continue
             
-            target_event = None
-            for e in raw_poly_events:
-                title = str(e.get('title', '')).lower()
-                if home_nick in title and away_nick in title:
-                    p_start, p_end = e.get("gameStartTime") or e.get("eventStartTime"), e.get("endDate")
-                    if is_target_single_game(fiat_time, p_start, p_end):
-                        target_event = e
-                        break
-            if not target_event: continue
-            
-            logger.info(f"\n🏀 MATCHED: {x_data['home']} vs {x_data['away']}")
+            logger.info(f"\n🏀 MATCHED: {x['home']} vs {x['away']}")
             logger.info("-" * 80)
             
-            for b in x_data["bookmakers"]:
-                game_output = []
-                for m in target_event.get('markets', []):
+            for b in x["bookies"]:
+                for m in target.get('markets', []):
                     if not m.get('acceptingOrders'): continue
-                    m_type = str(m.get('sportsMarketType', '')).lower()
-                    
+                    mt = str(m.get('sportsMarketType', '')).lower()
                     try:
                         out_v, tok_v = m.get('outcomes'), m.get('clobTokenIds')
-                        raw_outcomes = json.loads(out_v) if isinstance(out_v, str) else out_v
-                        raw_tokens = json.loads(tok_v) if isinstance(tok_v, str) else tok_v
+                        outs = json.loads(out_v) if isinstance(out_v, str) else out_v
+                        toks = json.loads(tok_v) if isinstance(tok_v, str) else tok_v
                     except: continue
+                    if not outs or len(outs) != len(toks): continue
 
-                    if not raw_outcomes or len(raw_outcomes) != len(raw_tokens): continue
+                    # Attribute 1: Moneyline [cite: 501]
+                    if mt == 'moneyline':
+                        for idx, t_nm in enumerate(outs):
+                            p_nk = clean(t_nm)
+                            f_odds = b["h2h"].get(p_nk)
+                            if f_odds:
+                                p_ask = clients.get_clob_best_ask(toks[idx])
+                                if p_ask:
+                                    # Always print log [cite: 605]
+                                    logger.info(f"   [ML] {b['name']:<12} | {t_nm[:10]:<10} | Price: {float(f_odds):<5} vs Poly {round(float(p_ask)*100,1)}%")
+                                    opp_nk = h_nk if p_nk == a_nk else a_nk
+                                    f_opp = b["h2h"].get(opp_nk)
+                                    if f_opp:
+                                        # Arbitrage Formula [cite: 570]
+                                        sm = p_ask + (Decimal("1") / f_opp)
+                                        if sm < 1: opportunities.append(_build_opp(x, b["name"], f_opp, p_ask, sm, "ML", t_nm, opp_nk))
 
-                    # Check Moneyline
-                    if m_type == 'moneyline':
-                        for idx, t_name in enumerate(raw_outcomes):
-                            p_nick = clean(t_name)
-                            fiat_odds = b["moneyline"].get(p_nick)
-                            if fiat_odds:
-                                poly_ask = clients.get_clob_best_ask(raw_tokens[idx])
-                                if poly_ask:
-                                    opp_nick = home_nick if p_nick == away_nick else away_nick
-                                    fiat_opp_odds = b["moneyline"].get(opp_nick)
-                                    if fiat_opp_odds:
-                                        arb_sum = poly_ask + (Decimal("1") / fiat_opp_odds)
-                                        if arb_sum < 1: opportunities.append(_build_opp(x_data, b["name"], fiat_opp_odds, poly_ask, arb_sum, "ML", t_name, opp_nick))
-                                        else: game_output.append(f"   [ML] {b['name']:<12} | {t_name[:10]:<10} | Price: {float(fiat_odds):<5} vs Poly {round(float(poly_ask)*100,1)}%")
+                    # Attribute 2: Totals (Over vs Under) [cite: 508, 514]
+                    elif mt in ['total', 'totals']:
+                        try: lne = round(float(m.get("line", 0)), 1)
+                        except: continue
+                        if lne in b["totals"]:
+                            norm = [str(o).lower() for o in outs]
+                            if "over" in norm and "under" in norm:
+                                o_idx, u_idx = norm.index("over"), norm.index("under")
+                                p_ov, p_un = clients.get_clob_best_ask(toks[o_idx]), clients.get_clob_best_ask(toks[u_idx])
+                                f_un, f_ov = b["totals"][lne].get('under'), b["totals"][lne].get('over')
+                                
+                                if p_ov and f_un:
+                                    logger.info(f"   [Total {lne}] {b['name']:<12} | OVER vs UNDER | Pin: {float(f_un):<5} vs Poly: {round(float(p_ov)*100,1)}%")
+                                    sm = p_ov + (Decimal("1") / f_un)
+                                    if sm < 1: opportunities.append(_build_opp(x, b["name"], f_un, p_ov, sm, f"Total {lne}", "OVER", "UNDER"))
+                                if p_un and f_ov:
+                                    logger.info(f"   [Total {lne}] {b['name']:<12} | UNDER vs OVER | Pin: {float(f_ov):<5} vs Poly: {round(float(p_un)*100,1)}%")
+                                    sm = p_un + (Decimal("1") / f_ov)
+                                    if sm < 1: opportunities.append(_build_opp(x, b["name"], f_ov, p_un, sm, f"Total {lne}", "UNDER", "OVER"))
 
-                    # Check Totals/Spreads (logic remains the same, just inside bookie loop)
-                    # [Skipping detailed implementation here for brevity, but it's identical to ML above]
+                    # Attribute 3: Spreads (Inverse Handicap) [cite: 517, 522]
+                    elif mt in ['spread', 'spreads']:
+                        try: lne = round(float(m.get("line", 0)), 1)
+                        except: continue
+                        inv = -lne
+                        if inv in b["spreads"]:
+                            for idx, t_nm in enumerate(outs):
+                                p_nk = clean(t_nm)
+                                opp_nk = h_nk if p_nk == a_nk else a_nk
+                                f_opp = b["spreads"][inv].get(opp_nk)
+                                if f_opp:
+                                    p_ask = clients.get_clob_best_ask(toks[idx])
+                                    if p_ask:
+                                        logger.info(f"   [Spread {lne}] {b['name']:<12} | {t_nm[:10]} vs {opp_nk[:10]} | Pin: {float(f_opp):<5} vs Poly {round(float(p_ask)*100,1)}%")
+                                        sm = p_ask + (Decimal("1") / f_opp)
+                                        if sm < 1: opportunities.append(_build_opp(x, b["name"], f_opp, p_ask, sm, f"Spread {lne}", t_nm, f"{opp_nk} ({inv})"))
 
-                if game_output:
-                    for row in game_output: logger.info(row)
-
-        # --- TELEGRAM ALERTS ---
+        logger.info("\n" + "="*80)
         if opportunities:
-            unique_arbs = {arb.expected_profit_percent: arb for arb in opportunities}.values()
-            sorted_arbs = sorted(unique_arbs, key=lambda x: x.expected_profit_percent, reverse=True)[:3]
+            # Sorting Top 3 Sniper [cite: 614, 615]
+            unq = {o.expected_profit_percent: o for o in opportunities}.values()
+            best = sorted(unq, key=lambda i: i.expected_profit_percent, reverse=True)[:3]
             from .alerts import format_opportunity_alert
-            for op in sorted_arbs:
-                clients.send_telegram_alert(format_opportunity_alert(op))
+            for op in best: clients.send_telegram_alert(format_opportunity_alert(op))
+            logger.info(f"🔥 Found {len(unq)} unique opportunities. Sent top {len(best)} to Telegram.")
         else:
-            logger.info("\n⚖️ Markets efficient across all bookmakers.")
+            logger.info("⚖️ Markets efficient across all bookmakers. No arbitrage gaps found below 100%.")
+        logger.info("="*80)
+    finally: clients.close()
 
-    finally:
-        clients.close()
-
-def _build_opp(x_data, b_name, fiat_odds, poly_price, arb_sum, m_title, poly_side, fiat_side):
-    roi = round(float((1/arb_sum - 1) * 100), 2)
+def _build_opp(x, b_nm, f_o, p_p, sm, m_tl, p_sd, f_sd):
+    roi = round(float((1/sm - 1) * 100), 2)
     return ArbitrageOpportunity(
-        sport_key="nba", home_team=x_data['home'], away_team=x_data['away'], commence_time=x_data['commence_time'],
-        market_title=m_title, selection_name=poly_side, bookmaker=b_name, odds_decimal=float(fiat_odds),
-        poly_price=float(poly_price), implied_total=float(arb_sum), edge_percent=0.0, expected_profit_percent=roi
+        sport_key="nba", home_team=x['home'], away_team=x['away'], commence_time=x['time'],
+        market_title=m_tl, selection_name=p_sd, bookmaker=b_nm, odds_decimal=float(f_o),
+        poly_price=float(p_p), implied_total=float(sm), edge_percent=0.0, expected_profit_percent=roi
     )
