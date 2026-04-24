@@ -1,54 +1,62 @@
 from __future__ import annotations
 from .models import ArbitrageOpportunity, FiatArbitrageOpportunity
 
-def build_alert_messages(
-    opportunities: list[ArbitrageOpportunity],
-    limit: int = 3,
-) -> list[str]:
+def build_global_alerts(poly_opps: list[ArbitrageOpportunity], fiat_opps: list[FiatArbitrageOpportunity], limit: int = 3) -> list[str]:
     if limit <= 0:
         return []
 
+    # Combine and sort all opportunities globally by profit
+    all_opps = []
+    for o in poly_opps: 
+        all_opps.append({'profit': o.expected_profit_percent, 'msg': format_opportunity_alert(o)})
+    for o in fiat_opps: 
+        all_opps.append({'profit': o.expected_profit_percent, 'msg': format_fiat_opportunity_alert(o)})
+    
+    # Sort from highest profit to lowest
+    sorted_opps = sorted(all_opps, key=lambda x: x['profit'], reverse=True)
+    
+    # Remove duplicates
     unique_messages: dict[str, str] = {}
-
-    sorted_opportunities = sorted(
-        opportunities,
-        key=lambda item: item.expected_profit_percent,
-        reverse=True,
-    )
-
-    for opportunity in sorted_opportunities:
-        message = format_opportunity_alert(opportunity)
-        unique_messages[message] = message
+    for item in sorted_opps:
+        if item['msg'] not in unique_messages:
+            unique_messages[item['msg']] = item['msg']
 
     return list(unique_messages.values())[:limit]
 
-def format_opportunity_alert(opportunity: ArbitrageOpportunity) -> str:
-    # --- REFACTORED: Uses precise, pre-calculated VWAP numbers ---
+
+def format_opportunity_alert(op: ArbitrageOpportunity) -> str:
+    # Uses precise VWAP numbers and explicitly shows share/payout parity
     return (
-        f"🚨 ARBITRAGE SNIPER ALERT 🚨\n\n"
-        f"🏀 MATCHUP: {opportunity.home_team} vs {opportunity.away_team}\n"
-        f"📅 DATE: {opportunity.commence_time}\n"
-        f"🎯 MARKET: {opportunity.market_title}\n"
-        f"💵 NET PROFIT MARGIN: {opportunity.expected_profit_percent:.2f}%\n\n"
-        f"🛠️ EXECUTION CALCULATOR (${opportunity.total_outlay:.2f} Bankroll):\n"
-        f"▪️ Bet ${opportunity.sportsbook_stake:.2f} on '{opportunity.fiat_selection}' at {opportunity.bookmaker} ({opportunity.odds_decimal:.2f})\n"
-        f"▪️ Buy ${opportunity.poly_spend:.2f} of '{opportunity.selection_name}' on Poly (Avg Price: ${opportunity.vwap:.4f})\n"
-        f"▪️ Polymarket Fees: ${opportunity.poly_fees:.2f}\n\n"
-        f"✅ GUARANTEED NET PROFIT: ${opportunity.locked_profit:.2f}"
+        f"🚨 POLYMARKET ARB ALERT 🚨\n\n"
+        f"🏀 MATCHUP: {op.home_team} vs {op.away_team}\n"
+        f"📅 DATE: {op.commence_time}\n"
+        f"🎯 MARKET: {op.market_title}\n"
+        f"💵 NET PROFIT MARGIN: {op.expected_profit_percent:.2f}%\n\n"
+        f"🛠️ EXECUTION CALCULATOR (${op.total_outlay:.2f} Bankroll):\n"
+        f"💰 TARGET PAYOUT ON BOTH SIDES: ${op.shares:.2f}\n"
+        f"▪️ Bet ${op.sportsbook_stake:.2f} on '{op.fiat_selection}' at {op.bookmaker} ({op.odds_decimal:.2f})\n"
+        f"▪️ Buy {op.shares:.2f} Shares of '{op.selection_name}' on Poly (Avg Price: ${op.vwap:.4f})\n"
+        f"▪️ Poly Spend: ${op.poly_spend:.2f} + Fees: ${op.poly_fees:.2f}\n\n"
+        f"✅ GUARANTEED NET PROFIT: ${op.locked_profit:.2f}"
     )
 
-def format_fiat_opportunity_alert(opportunity: FiatArbitrageOpportunity) -> str:
+
+def format_fiat_opportunity_alert(op: FiatArbitrageOpportunity) -> str:
+    # Distinct alert template for Traditional Bookmaker Arbitrage
+    net_profit = op.payout - (op.stake_1 + op.stake_2)
     return (
         f"🚨 TRADITIONAL FIAT ARB ALERT 🚨\n\n"
-        f"🏀 MATCHUP: {opportunity.home_team} vs {opportunity.away_team}\n"
-        f"📅 DATE: {opportunity.commence_time}\n"
-        f"🎯 MARKET: {opportunity.market_title}\n"
-        f"💵 NET PROFIT MARGIN: {opportunity.expected_profit_percent:.2f}%\n\n"
-        f"🛠️ HEDGE CALCULATOR ($100 Bankroll):\n"
-        f"▪️ Bet ${opportunity.stake_1:.2f} on '{opportunity.selection_1}' at {opportunity.bookmaker_1} ({opportunity.odds_1:.2f})\n"
-        f"▪️ Bet ${opportunity.stake_2:.2f} on '{opportunity.selection_2}' at {opportunity.bookmaker_2} ({opportunity.odds_2:.2f})\n\n"
-        f"✅ GUARANTEED RETURN: ${opportunity.guaranteed_payout:.2f}"
+        f"🏀 MATCHUP: {op.home_team} vs {op.away_team}\n"
+        f"📅 DATE: {op.commence_time}\n"
+        f"🎯 MARKET: {op.market_title}\n"
+        f"💵 NET PROFIT MARGIN: {op.expected_profit_percent:.2f}%\n\n"
+        f"🛠️ HEDGE CALCULATOR (${(op.stake_1 + op.stake_2):.2f} Bankroll):\n"
+        f"💰 TARGET PAYOUT ON BOTH SIDES: ${op.payout:.2f}\n"
+        f"▪️ Bet ${op.stake_1:.2f} on '{op.selection_1}' at {op.bookmaker_1} ({op.odds_1:.2f})\n"
+        f"▪️ Bet ${op.stake_2:.2f} on '{op.selection_2}' at {op.bookmaker_2} ({op.odds_2:.2f})\n\n"
+        f"✅ GUARANTEED NET PROFIT: ${net_profit:.2f}"
     )
 
+
 def build_no_opportunities_message() -> str:
-    return "⚖️ Markets efficient. No arbitrage gaps found below 100%."
+    return "⚖️ Markets efficient. No arbitrage gaps found."
