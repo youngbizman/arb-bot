@@ -27,6 +27,7 @@ class ArbitrageOpportunity:
     odds_decimal: float
     
     # --- Professional Financial Metrics ---
+    shares: float      # The number of Poly shares (and the payout amount)
     vwap: float
     marginal_price: float
     poly_spend: float
@@ -60,8 +61,8 @@ class FiatArbitrageOpportunity:
     stake_2: float
     
     implied_total: float
+    payout: float      # Payout on either side
     expected_profit_percent: float
-    guaranteed_payout: float
 
 @dataclass(frozen=True)
 class HealthSummary:
