@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 from .api_clients import ApiClients
 from .config import ConfigError, load_settings
 from .models import ArbitrageOpportunity, FiatArbitrageOpportunity
-from .alerts import format_opportunity_alert, format_fiat_opportunity_alert
+from .alerts import build_global_alerts
 
 logger = logging.getLogger(__name__)
 getcontext().prec = 28
@@ -188,7 +188,10 @@ def run() -> None:
                         odds2 = b2["h2h"].get(opp_nk)
                         if odds1 and odds2:
                             imp = (Decimal("1") / odds1) + (Decimal("1") / odds2)
-                            if imp < 1: fiat_opportunities.append(_build_fiat_opp(x, b1["name"], b2["name"], odds1, odds2, "ML", t_nm, opp_nk, imp))
+                            if imp < 1: 
+                                roi = round(((1/float(imp)) - 1) * 100, 2)
+                                if 0 < roi < 15.0: # SANITY FILTER
+                                    fiat_opportunities.append(_build_fiat_opp(x, b1["name"], b2["name"], odds1, odds2, "ML", t_nm, opp_nk, imp, roi))
 
                     # --- Attribute 2: Totals ---
                     for pt, lines1 in b1["totals"].items():
@@ -199,11 +202,17 @@ def run() -> None:
                             # B1 Over vs B2 Under
                             if ov1 and un2:
                                 imp = (Decimal("1") / ov1) + (Decimal("1") / un2)
-                                if imp < 1: fiat_opportunities.append(_build_fiat_opp(x, b1["name"], b2["name"], ov1, un2, f"Total {pt}", "OVER", "UNDER", imp))
+                                if imp < 1: 
+                                    roi = round(((1/float(imp)) - 1) * 100, 2)
+                                    if 0 < roi < 15.0:
+                                        fiat_opportunities.append(_build_fiat_opp(x, b1["name"], b2["name"], ov1, un2, f"Total {pt}", "OVER", "UNDER", imp, roi))
                             # B1 Under vs B2 Over
                             if un1 and ov2:
                                 imp = (Decimal("1") / un1) + (Decimal("1") / ov2)
-                                if imp < 1: fiat_opportunities.append(_build_fiat_opp(x, b1["name"], b2["name"], un1, ov2, f"Total {pt}", "UNDER", "OVER", imp))
+                                if imp < 1: 
+                                    roi = round(((1/float(imp)) - 1) * 100, 2)
+                                    if 0 < roi < 15.0:
+                                        fiat_opportunities.append(_build_fiat_opp(x, b1["name"], b2["name"], un1, ov2, f"Total {pt}", "UNDER", "OVER", imp, roi))
 
                     # --- Attribute 3: Spreads ---
                     for pt, lines1 in b1["spreads"].items():
@@ -214,7 +223,10 @@ def run() -> None:
                                 odds2 = b2["spreads"][inv].get(opp_nk)
                                 if odds1 and odds2:
                                     imp = (Decimal("1") / odds1) + (Decimal("1") / odds2)
-                                    if imp < 1: fiat_opportunities.append(_build_fiat_opp(x, b1["name"], b2["name"], odds1, odds2, f"Spread {pt}", t_nm, f"{opp_nk} ({inv})", imp))
+                                    if imp < 1: 
+                                        roi = round(((1/float(imp)) - 1) * 100, 2)
+                                        if 0 < roi < 15.0:
+                                            fiat_opportunities.append(_build_fiat_opp(x, b1["name"], b2["name"], odds1, odds2, f"Spread {pt}", t_nm, f"{opp_nk} ({inv})", imp, roi))
 
             # ==========================================================
             # 2. POLYMARKET CLOB SCANNER (Using VWAP logic)
@@ -246,7 +258,9 @@ def run() -> None:
                                     hedge = evaluate_buy_hedge_from_asks(asks, f_opp)
                                     logger.info(f"   [ML] {b['name']:<12} | {t_nm[:10]:<10} | {b['name']}: {float(f_opp):<5} | Status: {'✅' if hedge.passes_liquidity_filter else '❌ ' + str(hedge.reject_reason)}")
                                     if hedge.passes_liquidity_filter:
-                                        opportunities.append(_build_opp(x, b["name"], f_opp, hedge, "ML", t_nm, opp_nk))
+                                        roi = round(float((hedge.locked_profit / hedge.total_outlay) * 100), 2) if hedge.total_outlay > 0 else 0.0
+                                        if 0 < roi < 15.0: # SANITY FILTER
+                                            opportunities.append(_build_opp(x, b["name"], f_opp, hedge, "ML", t_nm, opp_nk, roi))
 
                     # --- Attribute 2: Totals ---
                     elif mt in ['total', 'totals']:
@@ -262,11 +276,17 @@ def run() -> None:
                                 if asks_ov and f_un:
                                     hedge = evaluate_buy_hedge_from_asks(asks_ov, f_un)
                                     logger.info(f"   [Total {lne}] {b['name']:<12} | OVER vs UNDER | {b['name']}: {float(f_un):<5} | Status: {'✅' if hedge.passes_liquidity_filter else '❌ ' + str(hedge.reject_reason)}")
-                                    if hedge.passes_liquidity_filter: opportunities.append(_build_opp(x, b["name"], f_un, hedge, f"Total {lne}", "OVER", "UNDER"))
+                                    if hedge.passes_liquidity_filter:
+                                        roi = round(float((hedge.locked_profit / hedge.total_outlay) * 100), 2) if hedge.total_outlay > 0 else 0.0
+                                        if 0 < roi < 15.0:
+                                            opportunities.append(_build_opp(x, b["name"], f_un, hedge, f"Total {lne}", "OVER", "UNDER", roi))
                                 if asks_un and f_ov:
                                     hedge = evaluate_buy_hedge_from_asks(asks_un, f_ov)
                                     logger.info(f"   [Total {lne}] {b['name']:<12} | UNDER vs OVER | {b['name']}: {float(f_ov):<5} | Status: {'✅' if hedge.passes_liquidity_filter else '❌ ' + str(hedge.reject_reason)}")
-                                    if hedge.passes_liquidity_filter: opportunities.append(_build_opp(x, b["name"], f_ov, hedge, f"Total {lne}", "UNDER", "OVER"))
+                                    if hedge.passes_liquidity_filter:
+                                        roi = round(float((hedge.locked_profit / hedge.total_outlay) * 100), 2) if hedge.total_outlay > 0 else 0.0
+                                        if 0 < roi < 15.0:
+                                            opportunities.append(_build_opp(x, b["name"], f_ov, hedge, f"Total {lne}", "UNDER", "OVER", roi))
 
                     # --- Attribute 3: Spreads ---
                     elif mt in ['spread', 'spreads']:
@@ -284,51 +304,44 @@ def run() -> None:
                                         hedge = evaluate_buy_hedge_from_asks(asks, f_opp)
                                         logger.info(f"   [Spread {lne}] {b['name']:<12} | {t_nm[:10]} vs {opp_nk[:10]} | {b['name']}: {float(f_opp):<5} | Status: {'✅' if hedge.passes_liquidity_filter else '❌ ' + str(hedge.reject_reason)}")
                                         if hedge.passes_liquidity_filter:
-                                            opportunities.append(_build_opp(x, b["name"], f_opp, hedge, f"Spread {lne}", t_nm, f"{opp_nk} ({inv})"))
+                                            roi = round(float((hedge.locked_profit / hedge.total_outlay) * 100), 2) if hedge.total_outlay > 0 else 0.0
+                                            if 0 < roi < 15.0:
+                                                opportunities.append(_build_opp(x, b["name"], f_opp, hedge, f"Spread {lne}", t_nm, f"{opp_nk} ({inv})", roi))
 
-        # --- FINAL SUMMARY ---
+        # --- FINAL SUMMARY & GLOBAL ALERTS ---
         logger.info("\n" + "="*80)
         
-        if fiat_opportunities:
-            logger.info(f"✅ TRADITIONAL ARB: Found {len(fiat_opportunities)} fiat-to-fiat opportunities.")
-            best_fiat = sorted(fiat_opportunities, key=lambda i: i.expected_profit_percent, reverse=True)[:3]
-            for op in best_fiat: clients.send_telegram_alert(format_fiat_opportunity_alert(op))
-
-        if opportunities:
-            logger.info(f"✅ POLYMARKET ARB: Found {len(opportunities)} true liquidity-adjusted opportunities.")
-            best_poly = sorted(opportunities, key=lambda i: i.expected_profit_percent, reverse=True)[:3]
-            for op in best_poly: clients.send_telegram_alert(format_opportunity_alert(op))
+        final_alerts = build_global_alerts(opportunities, fiat_opportunities, limit=3)
+        for msg in final_alerts:
+            clients.send_telegram_alert(msg)
             
-        if not fiat_opportunities and not opportunities:
-            logger.info("⚖️ SCAN COMPLETE: All bookmakers are currently efficient.")
+        logger.info(f"✅ SCAN COMPLETE. Evaluated entire slate. Sent {len(final_alerts)} highest-profit alerts.")
         logger.info("="*80)
         
     finally: clients.close()
 
 
 # --- HELPER FOR TRADITIONAL ARBITRAGE ---
-def _build_fiat_opp(x, b1_name, b2_name, odds1, odds2, m_tl, sel1, sel2, imp):
+def _build_fiat_opp(x, b1_name, b2_name, odds1, odds2, m_tl, sel1, sel2, imp, roi):
     bankroll = 100.0
-    guaranteed_payout = bankroll / float(imp)
-    stake1 = guaranteed_payout / float(odds1)
-    stake2 = guaranteed_payout / float(odds2)
-    roi = round(((1/float(imp)) - 1) * 100, 2)
+    payout = bankroll / float(imp)
+    stake1 = payout / float(odds1)
+    stake2 = payout / float(odds2)
     
     return FiatArbitrageOpportunity(
         sport_key="nba", home_team=x['home'], away_team=x['away'], commence_time=format_to_local(x['time']),
         market_title=m_tl, 
         bookmaker_1=b1_name, selection_1=sel1, odds_1=float(odds1), stake_1=stake1,
         bookmaker_2=b2_name, selection_2=sel2, odds_2=float(odds2), stake_2=stake2,
-        implied_total=float(imp), expected_profit_percent=roi, guaranteed_payout=guaranteed_payout
+        implied_total=float(imp), payout=payout, expected_profit_percent=roi
     )
 
 # --- HELPER FOR POLYMARKET ARBITRAGE ---
-def _build_opp(x, b_nm, f_o, hedge: HedgeEstimate, m_tl, p_sd, f_sd):
-    roi = round(float((hedge.locked_profit / hedge.total_outlay) * 100), 2) if hedge.total_outlay > 0 else 0.0
+def _build_opp(x, b_nm, f_o, hedge: HedgeEstimate, m_tl, p_sd, f_sd, roi):
     return ArbitrageOpportunity(
         sport_key="nba", home_team=x['home'], away_team=x['away'], commence_time=format_to_local(x['time']),
         market_title=m_tl, selection_name=p_sd, fiat_selection=f_sd, bookmaker=b_nm, odds_decimal=float(f_o),
-        vwap=float(hedge.vwap or 0), marginal_price=float(hedge.marginal_price or 0), 
+        shares=float(hedge.shares), vwap=float(hedge.vwap or 0), marginal_price=float(hedge.marginal_price or 0), 
         poly_spend=float(hedge.poly_spend), poly_fees=float(hedge.poly_fees), sportsbook_stake=float(hedge.sportsbook_stake),
         total_outlay=float(hedge.total_outlay), locked_profit=float(hedge.locked_profit), expected_profit_percent=roi
     )
