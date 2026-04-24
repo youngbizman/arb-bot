@@ -25,7 +25,9 @@ def build_global_alerts(poly_opps: list[ArbitrageOpportunity], fiat_opps: list[F
 
 
 def format_opportunity_alert(op: ArbitrageOpportunity) -> str:
-    # Uses precise VWAP numbers and explicitly shows share/payout parity
+    # We combine the spend and the fee so you only have to type one number into Polymarket
+    poly_total = op.poly_spend + op.poly_fees
+    
     return (
         f"🚨 POLYMARKET ARB ALERT 🚨\n\n"
         f"🏀 MATCHUP: {op.home_team} vs {op.away_team}\n"
@@ -35,14 +37,12 @@ def format_opportunity_alert(op: ArbitrageOpportunity) -> str:
         f"🛠️ EXECUTION CALCULATOR (${op.total_outlay:.2f} Bankroll):\n"
         f"💰 TARGET PAYOUT ON BOTH SIDES: ${op.shares:.2f}\n"
         f"▪️ Bet ${op.sportsbook_stake:.2f} on '{op.fiat_selection}' at {op.bookmaker} ({op.odds_decimal:.2f})\n"
-        f"▪️ Buy {op.shares:.2f} Shares of '{op.selection_name}' on Poly (Avg Price: ${op.vwap:.4f})\n"
-        f"▪️ Poly Spend: ${op.poly_spend:.2f} + Fees: ${op.poly_fees:.2f}\n\n"
+        f"▪️ Enter ${poly_total:.2f} on Poly for '{op.selection_name}'\n\n"
         f"✅ GUARANTEED NET PROFIT: ${op.locked_profit:.2f}"
     )
 
 
 def format_fiat_opportunity_alert(op: FiatArbitrageOpportunity) -> str:
-    # Distinct alert template for Traditional Bookmaker Arbitrage
     net_profit = op.payout - (op.stake_1 + op.stake_2)
     return (
         f"🚨 TRADITIONAL FIAT ARB ALERT 🚨\n\n"
