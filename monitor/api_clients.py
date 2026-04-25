@@ -38,7 +38,7 @@ class ApiClients:
             "apiKey": self.settings.odds_api_key,
             "regions": "eu,us",
             "markets": "h2h,totals,spreads",
-            "bookmakers": "pinnacle,onexbet", # DraftKings Removed
+            "bookmakers": "pinnacle,onexbet",
         }
         try:
             data = self._get_json(url, params=params)
@@ -98,8 +98,8 @@ class ApiClients:
         params = {
             "apiKey": self.settings.odds_api_key,
             "regions": "eu,us",
-            "markets": "h2h,totals", # Added Totals for UFC logic
-            "bookmakers": "pinnacle,onexbet", # DraftKings Removed
+            "markets": "h2h,totals", 
+            "bookmakers": "pinnacle,onexbet",
         }
         try:
             data = self._get_json(url, params=params)
@@ -109,10 +109,10 @@ class ApiClients:
             return []
 
     def get_mma_polymarket_events(self) -> list[dict[str, Any]]:
-        # FIXED: Pagination loop fetches up to 1000 events to guarantee UFC is found
+        # FIXED: Deep Pagination up to 5,000 events to ensure UFC is found
         url = "https://gamma-api.polymarket.com/events"
         all_events = []
-        for offset in range(0, 1000, 100):
+        for offset in range(0, 5000, 100):
             params = {"active": "true", "closed": "false", "limit": 100, "offset": offset}
             try:
                 data = self._get_json(url, params=params)
