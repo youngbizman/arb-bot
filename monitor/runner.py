@@ -108,7 +108,6 @@ def is_target_single_game(f_t, p_s, p_e):
     if ts > 0 and abs(ts - tf) > 14400: return False
     return True
 
-# Validation Logic from Research
 def validate_market_state(book: dict, fiat_last_update: str) -> tuple[bool, float, float]:
     poly_ts = float(book.get("timestamp") or 0)
     if poly_ts > 1e11: poly_ts /= 1000.0  
@@ -134,7 +133,15 @@ def run() -> None:
             h, a = game.get('home_team'), game.get('away_team')
             if not h or not a: continue
             k = f"{clean(h)}_{clean(a)}"
-            if k not in fiat_games: fiat_games[k] = {"home": h, "away": a, "time": game.get('commence_time'), "bookies": []}
+            if k not in fiat_games: 
+                # FIXED: Added 'sport_key' to the game dictionary
+                fiat_games[k] = {
+                    "home": h, 
+                    "away": a, 
+                    "time": game.get('commence_time'), 
+                    "sport_key": game.get('sport_key', 'nba'), 
+                    "bookies": []
+                }
             for b in game.get("bookmakers", []):
                 b_data = {"name": b.get("title"), "last_update": b.get("last_update"), "h2h": {}, "totals": {}, "spreads": {}}
                 for m in b.get("markets", []):
@@ -198,7 +205,6 @@ def run() -> None:
                                     if hedge.passes_liquidity_filter:
                                         roi = round(float((hedge.locked_profit/hedge.total_outlay)*100), 2)
                                         if 0 < roi < 15.0: opportunities.append(_build_opp(x, b["name"], f_opp, hedge, "ML", t_nm, opp_nk, roi, dt, sp))
-                    # [Other market checks (Total/Spread) repeat this structure to maintain console logs]
 
         logger.info("\n" + "="*80)
         final_alerts = build_global_alerts(opportunities, fiat_opportunities, limit=3)
@@ -209,6 +215,7 @@ def run() -> None:
 
 def _build_fiat_opp(x, b1, b2, o1, o2, m, s1, s2, imp, roi):
     payout = 100.0 / float(imp)
+    # This now works because x['sport_key'] is guaranteed to exist
     return FiatArbitrageOpportunity(x['sport_key'], x['home'], x['away'], format_to_local(x['time']), m, b1, s1, float(o1), (payout/float(o1)), b2, s2, float(o2), (payout/float(o2)), float(imp), payout, roi)
 
 def _build_opp(x, b, f_o, hedge, m, p_s, f_s, roi, dt, sp):
