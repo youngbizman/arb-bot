@@ -38,7 +38,7 @@ class ApiClients:
             "apiKey": self.settings.odds_api_key,
             "regions": "eu,us",
             "markets": "h2h,totals,spreads",
-            "bookmakers": "pinnacle,onexbet",
+            "bookmakers": "pinnacle,onexbet", # DraftKings Removed
         }
         try:
             data = self._get_json(url, params=params)
@@ -98,8 +98,8 @@ class ApiClients:
         params = {
             "apiKey": self.settings.odds_api_key,
             "regions": "eu,us",
-            "markets": "h2h",
-            "bookmakers": "pinnacle,onexbet,draftkings",
+            "markets": "h2h,totals", # Added Totals for UFC logic
+            "bookmakers": "pinnacle,onexbet", # DraftKings Removed
         }
         try:
             data = self._get_json(url, params=params)
@@ -109,13 +109,22 @@ class ApiClients:
             return []
 
     def get_mma_polymarket_events(self) -> list[dict[str, Any]]:
+        # FIXED: Pagination loop fetches up to 1000 events to guarantee UFC is found
         url = "https://gamma-api.polymarket.com/events"
-        params = {"active": "true", "closed": "false", "limit": 300}
-        try:
-            data = self._get_json(url, params=params)
-            if isinstance(data, list): return data
-            if isinstance(data, dict): return data.get("events", [])
-            return []
-        except Exception as exc:
-            logger.error(f"MMA Polymarket request failed: {exc}")
-            return []
+        all_events = []
+        for offset in range(0, 1000, 100):
+            params = {"active": "true", "closed": "false", "limit": 100, "offset": offset}
+            try:
+                data = self._get_json(url, params=params)
+                if isinstance(data, list): 
+                    all_events.extend(data)
+                    if len(data) < 100: break
+                elif isinstance(data, dict): 
+                    events = data.get("events", [])
+                    all_events.extend(events)
+                    if len(events) < 100: break
+                else: break
+            except Exception as exc:
+                logger.error(f"MMA Polymarket pagination failed at offset {offset}: {exc}")
+                break
+        return all_events
