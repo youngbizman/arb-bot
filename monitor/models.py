@@ -27,7 +27,7 @@ class ArbitrageOpportunity:
     odds_decimal: float
     
     # --- Professional Financial Metrics ---
-    shares: float      # The number of Poly shares (and the payout amount)
+    shares: float      
     vwap: float
     marginal_price: float
     poly_spend: float
@@ -36,6 +36,10 @@ class ArbitrageOpportunity:
     total_outlay: float
     locked_profit: float
     expected_profit_percent: float
+    
+    # --- Deep State Validation Metrics ---
+    time_delta_seconds: float
+    spread_percent: float
     
     odds_url: str = ""
     polymarket_url: str = ""
@@ -48,20 +52,18 @@ class FiatArbitrageOpportunity:
     commence_time: str
     market_title: str
     
-    # Bookmaker 1
     bookmaker_1: str
     selection_1: str
     odds_1: float
     stake_1: float
     
-    # Bookmaker 2
     bookmaker_2: str
     selection_2: str
     odds_2: float
     stake_2: float
     
     implied_total: float
-    payout: float      # Payout on either side
+    payout: float      
     expected_profit_percent: float
 
 @dataclass(frozen=True)
