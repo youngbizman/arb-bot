@@ -59,18 +59,22 @@ class ApiClients:
             logger.error(f"Polymarket request failed: {exc}")
             return []
 
-    # --- REFACTORED: Now returns the entire Ask Ladder ---
-    def get_clob_asks(self, token_id: str) -> list[dict[str, Any]]:
-        if not str(token_id).strip(): return []
+    # --- REFACTORED: Now returns bids, asks, and the exact timestamp ---
+    def get_clob_book(self, token_id: str) -> dict[str, Any]:
+        if not str(token_id).strip(): return {"asks": [], "bids": [], "timestamp": "0"}
         url = "https://clob.polymarket.com/book"
         params = {"token_id": token_id}
         try:
             data = self._get_json(url, params=params)
-            if not isinstance(data, dict): return []
-            return data.get("asks", [])
+            if not isinstance(data, dict): return {"asks": [], "bids": [], "timestamp": "0"}
+            return {
+                "asks": data.get("asks", []),
+                "bids": data.get("bids", []),
+                "timestamp": data.get("timestamp", "0")
+            }
         except Exception as exc:
             logger.warning(f"CLOB request failed for token {token_id}: {exc}")
-            return []
+            return {"asks": [], "bids": [], "timestamp": "0"}
 
     def send_telegram_alert(self, message: str) -> bool:
         if not message.strip(): return False
