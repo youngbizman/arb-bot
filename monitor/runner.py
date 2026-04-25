@@ -108,25 +108,13 @@ def is_target_single_game(f_t, p_s, p_e):
     if ts > 0 and abs(ts - tf) > 14400: return False
     return True
 
-def validate_market_state(book: dict, fiat_last_update: str) -> tuple[bool, float, float]:
-    poly_ts = float(book.get("timestamp") or 0)
-    if poly_ts > 1e11: poly_ts /= 1000.0  
-    fiat_ts = parse_iso8601_to_epoch(fiat_last_update)
-    delta_t = abs(fiat_ts - poly_ts) if fiat_ts > 0 else 999.0
-    asks = sorted([Decimal(str(r.get("price", "0"))) for r in book.get("asks", []) if Decimal(str(r.get("size", "0"))) > 0])
-    bids = sorted([Decimal(str(r.get("price", "0"))) for r in book.get("bids", []) if Decimal(str(r.get("size", "0"))) > 0], reverse=True)
-    best_ask = float(asks[0]) if asks else 1.0
-    best_bid = float(bids[0]) if bids else 0.0
-    spread = ((best_ask - best_bid) / best_ask) * 100 if best_ask > 0 else 100.0
-    return (delta_t <= 2.5 and spread <= 5.0), delta_t, spread
-
 def run() -> None:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     try: settings = load_settings()
     except ConfigError as exc: logger.error(f"Config error: {exc}"); return
     clients = ApiClients(settings)
     try:
-        logger.info("📡 Initializing Sync-Validated Sniper...")
+        logger.info("📡 Initializing NBA Sniper...")
         raw_odds, raw_poly = clients.get_fiat_data(), clients.get_polymarket_events()
         fiat_games = {}
         for game in raw_odds:
@@ -134,7 +122,6 @@ def run() -> None:
             if not h or not a: continue
             k = f"{clean(h)}_{clean(a)}"
             if k not in fiat_games: 
-                # FIXED: Added 'sport_key' to the game dictionary
                 fiat_games[k] = {
                     "home": h, 
                     "away": a, 
@@ -197,14 +184,10 @@ def run() -> None:
                                 f_opp = b["h2h"].get(opp_nk)
                                 if f_opp:
                                     hedge = evaluate_buy_hedge_from_asks(book.get("asks", []), f_opp)
-                                    is_v, dt, sp = validate_market_state(book, b.get("last_update"))
-                                    if hedge.passes_liquidity_filter and not is_v:
-                                        hedge.passes_liquidity_filter = False
-                                        hedge.reject_reason = f"Async Data (Delta {dt:.1f}s, Spread {sp:.1f}%)"
                                     logger.info(f"   [ML] {b['name']:<12} | {t_nm[:10]:<10} | {b['name']}: {float(f_opp):<5} | Status: {'✅' if hedge.passes_liquidity_filter else '❌ ' + str(hedge.reject_reason)}")
                                     if hedge.passes_liquidity_filter:
                                         roi = round(float((hedge.locked_profit/hedge.total_outlay)*100), 2)
-                                        if 0 < roi < 15.0: opportunities.append(_build_opp(x, b["name"], f_opp, hedge, "ML", t_nm, opp_nk, roi, dt, sp))
+                                        if 0 < roi < 15.0: opportunities.append(_build_opp(x, b["name"], f_opp, hedge, "ML", t_nm, opp_nk, roi, 0.0, 0.0))
 
         logger.info("\n" + "="*80)
         final_alerts = build_global_alerts(opportunities, fiat_opportunities, limit=3)
@@ -215,7 +198,6 @@ def run() -> None:
 
 def _build_fiat_opp(x, b1, b2, o1, o2, m, s1, s2, imp, roi):
     payout = 100.0 / float(imp)
-    # This now works because x['sport_key'] is guaranteed to exist
     return FiatArbitrageOpportunity(x['sport_key'], x['home'], x['away'], format_to_local(x['time']), m, b1, s1, float(o1), (payout/float(o1)), b2, s2, float(o2), (payout/float(o2)), float(imp), payout, roi)
 
 def _build_opp(x, b, f_o, hedge, m, p_s, f_s, roi, dt, sp):
