@@ -38,7 +38,7 @@ class ApiClients:
             "apiKey": self.settings.odds_api_key,
             "regions": "eu,us",
             "markets": "h2h,totals,spreads",
-            "bookmakers": "pinnacle,onexbet,draftkings",
+            "bookmakers": "pinnacle,onexbet",
         }
         try:
             data = self._get_json(url, params=params)
