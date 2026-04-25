@@ -1,0 +1,36 @@
+name: UFC Arbitrage Sniper
+
+on:
+  schedule:
+    # Runs every 2 hours on Thursday, Friday, Saturday, and Sunday
+    - cron: '0 */2 * * 4,5,6,0'
+  workflow_dispatch: # Allows you to click "Run workflow" manually in GitHub
+
+jobs:
+  run-ufc-sniper:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10' # Or whatever version you use for NBA
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests
+          # If you have a requirements.txt, you can use: pip install -r requirements.txt
+
+      - name: Run UFC Scanner
+        env:
+          # You can use your existing NBA secrets, or create new ones in GitHub 
+          # (e.g., UFC_TELEGRAM_BOT_TOKEN) to send these to a completely private channel.
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python -c "from monitor.runner_ufc import run_ufc; run_ufc()"
