@@ -106,10 +106,22 @@ def clean_for_matching(text: str) -> str:
     text = unicodedata.normalize('NFKD', str(text)).encode('ASCII', 'ignore').decode('utf-8').lower()
     return re.sub(r'[^a-z0-9\s]', '', text)
 
-def is_fighter_match(fiat_home: str, fiat_away: str, poly_title: str) -> bool:
+def is_fighter_match(fiat_home: str, fiat_away: str, poly_text: str) -> bool:
+    if not poly_text: return False
     fiat_str = clean_for_matching(f"{fiat_home} {fiat_away}")
-    poly_str = clean_for_matching(poly_title)
-    return fuzz.token_set_ratio(fiat_str, poly_str) > 75
+    poly_str = clean_for_matching(poly_text)
+    
+    # 1. High-confidence fuzzy match
+    if fuzz.token_set_ratio(fiat_str, poly_str) > 75:
+        return True
+        
+    # 2. Strict Last Name Fallback (For grouped events)
+    h_last = clean_fighter_name(fiat_home)
+    a_last = clean_fighter_name(fiat_away)
+    if h_last and a_last and h_last in poly_str and a_last in poly_str:
+        return True
+        
+    return False
 
 def format_to_local(iso: str) -> str:
     try: return datetime.fromisoformat(iso.replace("Z", "+00:00")).astimezone(ZoneInfo("America/Toronto")).strftime("%Y-%m-%d %I:%M %p")
@@ -122,7 +134,7 @@ def run_ufc() -> None:
     clients = ApiClients(settings)
     
     try:
-        logger.info("📡 Initializing UFC/MMA Sniper...")
+        logger.info("📡 Initializing UFC/MMA Deep Sniper...")
         raw_odds, raw_poly = clients.get_mma_fiat_data(), clients.get_mma_polymarket_events()
         
         fiat_games = {}
@@ -142,7 +154,7 @@ def run_ufc() -> None:
                 }
                 
             for b in game.get("bookmakers", []):
-                b_data = {"name": b.get("title"), "last_update": b.get("last_update"), "h2h": {}, "totals": {}}
+                b_data = {"name": b.get("title"), "h2h": {}, "totals": {}}
                 for m in b.get("markets", []):
                     mk = m.get('key')
                     for o in m.get('outcomes', []):
@@ -170,7 +182,6 @@ def run_ufc() -> None:
                 for j in range(i + 1, len(x["bookies"])):
                     b1, b2 = x["bookies"][i], x["bookies"][j]
                     
-                    # Fiat H2H
                     for t_nm, o1 in b1["h2h"].items():
                         opp_nk = h_nk if t_nm == a_nk else a_nk
                         o2 = b2["h2h"].get(opp_nk)
@@ -181,7 +192,6 @@ def run_ufc() -> None:
                                 if 0 < roi < 25.0:
                                     fiat_opportunities.append(_build_fiat_opp(x, b1["name"], b2["name"], o1, o2, "Moneyline", t_nm, opp_nk, imp, roi))
                                     
-                    # Fiat Totals
                     for pt, t1_odds in b1.get("totals", {}).items():
                         t2_odds = b2.get("totals", {}).get(pt, {})
                         o1_over, o1_under = t1_odds.get('over'), t1_odds.get('under')
@@ -191,21 +201,27 @@ def run_ufc() -> None:
                             imp = (Decimal("1")/o1_over) + (Decimal("1")/o2_under)
                             if imp < 1:
                                 roi = round(((1/float(imp))-1)*100, 2)
-                                if 0 < roi < 25.0:
-                                    fiat_opportunities.append(_build_fiat_opp(x, b1["name"], b2["name"], o1_over, o2_under, f"Total Rounds {pt}", "Over", "Under", imp, roi))
+                                if 0 < roi < 25.0: fiat_opportunities.append(_build_fiat_opp(x, b1["name"], b2["name"], o1_over, o2_under, f"Total Rounds {pt}", "Over", "Under", imp, roi))
                         if o1_under and o2_over:
                             imp = (Decimal("1")/o1_under) + (Decimal("1")/o2_over)
                             if imp < 1:
                                 roi = round(((1/float(imp))-1)*100, 2)
-                                if 0 < roi < 25.0:
-                                    fiat_opportunities.append(_build_fiat_opp(x, b1["name"], b2["name"], o1_under, o2_over, f"Total Rounds {pt}", "Under", "Over", imp, roi))
+                                if 0 < roi < 25.0: fiat_opportunities.append(_build_fiat_opp(x, b1["name"], b2["name"], o1_under, o2_over, f"Total Rounds {pt}", "Under", "Over", imp, roi))
 
-            # 2. Poly Scanner (UFC - Advanced Fuzzy Matching)
+            # 2. Poly Scanner (UFC - Deep Event Mapping)
             target = None
             for e in raw_poly:
+                # First check if the overarching Event title matches the fighters
                 if is_fighter_match(x["home"], x["away"], e.get('title', '')):
                     target = e
                     break
+                # If not, check every single market inside the event (fixes the "UFC 302" grouping problem)
+                for m in e.get('markets', []):
+                    market_text = f"{m.get('question', '')} {m.get('groupItemTitle', '')}"
+                    if is_fighter_match(x["home"], x["away"], market_text):
+                        target = e
+                        break
+                if target: break
                     
             if not target: 
                 logger.info(f"   [ML] Polymarket | Status: ❌ No matching market found")
@@ -214,13 +230,21 @@ def run_ufc() -> None:
             for b in x["bookies"]:
                 for m in target.get('markets', []):
                     if not m.get('acceptingOrders'): continue
+                    
                     mt = str(m.get('sportsMarketType', '')).lower()
                     question = str(m.get('question', '')).lower()
+                    group_title = str(m.get('groupItemTitle', '')).lower()
+                    
+                    # Prevent Cross-Contamination in Grouped Events
+                    event_context = str(target.get('title', '')).lower()
+                    market_context = f"{question} {group_title}"
+                    if not is_fighter_match(x["home"], x["away"], event_context) and not is_fighter_match(x["home"], x["away"], market_context):
+                        continue
+                        
                     try:
                         outs, toks = json.loads(m.get('outcomes')), json.loads(m.get('clobTokenIds'))
                     except: continue
                     
-                    # POLY MONEYLINE
                     if mt == 'moneyline' or mt == 'winner':
                         for idx, t_nm in enumerate(outs):
                             p_nk = clean_fighter_name(t_nm)
@@ -238,7 +262,6 @@ def run_ufc() -> None:
                                         if 0 < roi < 25.0:
                                             opportunities.append(_build_opp(x, b["name"], f_opp, hedge, "Moneyline", t_nm, opp_nk, roi, 0.0, 0.0))
 
-                    # POLY TOTAL ROUNDS
                     elif mt == 'round_over_under_match' or 'over/under' in question or 'total' in question:
                         line_match = re.search(r'(\d+\.5)', question)
                         if not line_match: continue
@@ -255,11 +278,11 @@ def run_ufc() -> None:
                             
                             f_opp, poly_side, fiat_side = None, "", ""
                             if out_lbl == 'yes' or out_lbl == 'over':
-                                f_opp = fiat_under  # Hedge YES (Over) with Fiat Under
+                                f_opp = fiat_under
                                 poly_side = f"Over {line}"
                                 fiat_side = "Under"
                             elif out_lbl == 'no' or out_lbl == 'under':
-                                f_opp = fiat_over  # Hedge NO (Under) with Fiat Over
+                                f_opp = fiat_over
                                 poly_side = f"Under {line}"
                                 fiat_side = "Over"
                             
