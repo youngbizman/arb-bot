@@ -49,7 +49,6 @@ def fee_per_share(price: Decimal, fee_rate: Decimal) -> Decimal:
 def evaluate_buy_hedge_from_asks(
     asks: Iterable[Mapping[str, str]], decimal_odds: Decimal, bankroll: str = "100", fee_rate: str = "0.03", max_avg_impact_rel: str = "0.02"
 ) -> HedgeEstimate:
-    """Calculates real-world VWAP profitability, accounting for depth and 3% sports fees."""
     levels = normalize_asks(asks)
     odds, bankroll_d, fee_r = Decimal(str(decimal_odds)), Decimal(bankroll), Decimal(fee_rate)
     inv_odds = Decimal("1") / odds
@@ -128,6 +127,26 @@ def is_target_single_game(fiat_time, poly_start, poly_end):
     if t_e > 0 and (t_e - t_f) > 172800: return False
     return True
 
+# --- MARKET VALIDATION ENGINE ---
+def validate_market_state(book: dict, fiat_last_update: str) -> tuple[bool, float, float]:
+    """Calculates Timestamp Delta and Bid-Ask Spread to block ghost liquidity."""
+    poly_ts = float(book.get("timestamp") or 0)
+    if poly_ts > 1e11: poly_ts /= 1000.0  # Convert to seconds if API gives MS
+    
+    fiat_ts = parse_iso8601_to_epoch(fiat_last_update)
+    delta_t = abs(fiat_ts - poly_ts) if fiat_ts > 0 else 999.0
+
+    asks = sorted([Decimal(str(r.get("price", "0"))) for r in book.get("asks", []) if Decimal(str(r.get("size", "0"))) > 0])
+    bids = sorted([Decimal(str(r.get("price", "0"))) for r in book.get("bids", []) if Decimal(str(r.get("size", "0"))) > 0], reverse=True)
+    
+    best_ask = float(asks[0]) if asks else 1.0
+    best_bid = float(bids[0]) if bids else 0.0
+    spread_pct = ((best_ask - best_bid) / best_ask) * 100 if best_ask > 0 else 100.0
+
+    # Strict Limits: Max 2.5s time difference, Max 5% spread gap
+    is_valid = (delta_t <= 2.5) and (spread_pct <= 5.0)
+    return is_valid, delta_t, spread_pct
+
 # --- MAIN RUNNER ---
 def run() -> None:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -138,7 +157,7 @@ def run() -> None:
     clients = ApiClients(settings)
     
     try:
-        logger.info("📡 Initializing VWAP-Aware Multi-Market Sniper...")
+        logger.info("📡 Initializing Sync-Validated VWAP Sniper...")
         raw_odds, raw_poly = clients.get_fiat_data(), clients.get_polymarket_events()
         
         fiat_games = {}
@@ -149,7 +168,8 @@ def run() -> None:
             if k not in fiat_games: fiat_games[k] = {"home": h, "away": a, "time": game.get('commence_time'), "bookies": []}
             
             for b in game.get("bookmakers", []):
-                b_data = {"name": b.get("title"), "h2h": {}, "totals": {}, "spreads": {}}
+                # Now tracking the fiat last_update timestamp
+                b_data = {"name": b.get("title"), "last_update": b.get("last_update"), "h2h": {}, "totals": {}, "spreads": {}}
                 for m in b.get("markets", []):
                     mk = m.get('key')
                     for o in m.get('outcomes', []):
@@ -176,13 +196,12 @@ def run() -> None:
             logger.info("-" * 80)
 
             # ==========================================================
-            # 1. TRADITIONAL FIAT-TO-FIAT SCANNER (2 by 2)
+            # 1. TRADITIONAL FIAT-TO-FIAT SCANNER
             # ==========================================================
             for i in range(len(x["bookies"])):
                 for j in range(i + 1, len(x["bookies"])):
                     b1, b2 = x["bookies"][i], x["bookies"][j]
                     
-                    # --- Attribute 1: Moneyline ---
                     for t_nm, odds1 in b1["h2h"].items():
                         opp_nk = h_nk if t_nm == a_nk else a_nk
                         odds2 = b2["h2h"].get(opp_nk)
@@ -190,23 +209,19 @@ def run() -> None:
                             imp = (Decimal("1") / odds1) + (Decimal("1") / odds2)
                             if imp < 1: 
                                 roi = round(((1/float(imp)) - 1) * 100, 2)
-                                if 0 < roi < 15.0: # SANITY FILTER
+                                if 0 < roi < 15.0:
                                     fiat_opportunities.append(_build_fiat_opp(x, b1["name"], b2["name"], odds1, odds2, "ML", t_nm, opp_nk, imp, roi))
 
-                    # --- Attribute 2: Totals ---
                     for pt, lines1 in b1["totals"].items():
                         if pt in b2["totals"]:
                             ov1, un1 = lines1.get("over"), lines1.get("under")
                             ov2, un2 = b2["totals"][pt].get("over"), b2["totals"][pt].get("under")
-                            
-                            # B1 Over vs B2 Under
                             if ov1 and un2:
                                 imp = (Decimal("1") / ov1) + (Decimal("1") / un2)
                                 if imp < 1: 
                                     roi = round(((1/float(imp)) - 1) * 100, 2)
                                     if 0 < roi < 15.0:
                                         fiat_opportunities.append(_build_fiat_opp(x, b1["name"], b2["name"], ov1, un2, f"Total {pt}", "OVER", "UNDER", imp, roi))
-                            # B1 Under vs B2 Over
                             if un1 and ov2:
                                 imp = (Decimal("1") / un1) + (Decimal("1") / ov2)
                                 if imp < 1: 
@@ -214,7 +229,6 @@ def run() -> None:
                                     if 0 < roi < 15.0:
                                         fiat_opportunities.append(_build_fiat_opp(x, b1["name"], b2["name"], un1, ov2, f"Total {pt}", "UNDER", "OVER", imp, roi))
 
-                    # --- Attribute 3: Spreads ---
                     for pt, lines1 in b1["spreads"].items():
                         inv = -pt
                         if inv in b2["spreads"]:
@@ -229,7 +243,7 @@ def run() -> None:
                                             fiat_opportunities.append(_build_fiat_opp(x, b1["name"], b2["name"], odds1, odds2, f"Spread {pt}", t_nm, f"{opp_nk} ({inv})", imp, roi))
 
             # ==========================================================
-            # 2. POLYMARKET CLOB SCANNER (Using VWAP logic)
+            # 2. POLYMARKET CLOB SCANNER (With Time-Sync Engine)
             # ==========================================================
             target = next((e for e in raw_poly if h_nk in e.get('title','').lower() and a_nk in e.get('title','').lower()), None)
             if not target or not is_target_single_game(x["time"], target.get("gameStartTime"), target.get("endDate")): 
@@ -246,23 +260,26 @@ def run() -> None:
                     except: continue
                     if not outs or len(outs) != len(toks): continue
 
-                    # --- Attribute 1: Moneyline ---
                     if mt == 'moneyline':
                         for idx, t_nm in enumerate(outs):
                             p_nk, f_odds = clean(t_nm), b["h2h"].get(clean(t_nm))
                             if f_odds:
-                                asks = clients.get_clob_asks(toks[idx])
+                                book = clients.get_clob_book(toks[idx])
                                 opp_nk = h_nk if p_nk == a_nk else a_nk
                                 f_opp = b["h2h"].get(opp_nk)
-                                if asks and f_opp:
-                                    hedge = evaluate_buy_hedge_from_asks(asks, f_opp)
+                                
+                                is_valid, delta_t, spread_pct = validate_market_state(book, b.get("last_update"))
+                                
+                                if is_valid and f_opp:
+                                    hedge = evaluate_buy_hedge_from_asks(book.get("asks", []), f_opp)
                                     logger.info(f"   [ML] {b['name']:<12} | {t_nm[:10]:<10} | {b['name']}: {float(f_opp):<5} | Status: {'✅' if hedge.passes_liquidity_filter else '❌ ' + str(hedge.reject_reason)}")
                                     if hedge.passes_liquidity_filter:
                                         roi = round(float((hedge.locked_profit / hedge.total_outlay) * 100), 2) if hedge.total_outlay > 0 else 0.0
-                                        if 0 < roi < 15.0: # SANITY FILTER
-                                            opportunities.append(_build_opp(x, b["name"], f_opp, hedge, "ML", t_nm, opp_nk, roi))
+                                        if 0 < roi < 15.0: 
+                                            opportunities.append(_build_opp(x, b["name"], f_opp, hedge, "ML", t_nm, opp_nk, roi, delta_t, spread_pct))
+                                elif not is_valid:
+                                    logger.debug(f"   [ML] Rejected - Async Data (Delta: {delta_t:.1f}s, Spread: {spread_pct:.1f}%)")
 
-                    # --- Attribute 2: Totals ---
                     elif mt in ['total', 'totals']:
                         try: lne = round(float(m.get("line", 0)), 1)
                         except: continue
@@ -270,25 +287,25 @@ def run() -> None:
                             norm = [str(o).lower() for o in outs]
                             if "over" in norm and "under" in norm:
                                 o_idx, u_idx = norm.index("over"), norm.index("under")
-                                asks_ov, asks_un = clients.get_clob_asks(toks[o_idx]), clients.get_clob_asks(toks[u_idx])
+                                book_ov, book_un = clients.get_clob_book(toks[o_idx]), clients.get_clob_book(toks[u_idx])
                                 f_un, f_ov = b["totals"][lne].get('under'), b["totals"][lne].get('over')
                                 
-                                if asks_ov and f_un:
-                                    hedge = evaluate_buy_hedge_from_asks(asks_ov, f_un)
-                                    logger.info(f"   [Total {lne}] {b['name']:<12} | OVER vs UNDER | {b['name']}: {float(f_un):<5} | Status: {'✅' if hedge.passes_liquidity_filter else '❌ ' + str(hedge.reject_reason)}")
+                                valid_ov, dt_ov, sp_ov = validate_market_state(book_ov, b.get("last_update"))
+                                if valid_ov and f_un:
+                                    hedge = evaluate_buy_hedge_from_asks(book_ov.get("asks", []), f_un)
                                     if hedge.passes_liquidity_filter:
                                         roi = round(float((hedge.locked_profit / hedge.total_outlay) * 100), 2) if hedge.total_outlay > 0 else 0.0
                                         if 0 < roi < 15.0:
-                                            opportunities.append(_build_opp(x, b["name"], f_un, hedge, f"Total {lne}", "OVER", "UNDER", roi))
-                                if asks_un and f_ov:
-                                    hedge = evaluate_buy_hedge_from_asks(asks_un, f_ov)
-                                    logger.info(f"   [Total {lne}] {b['name']:<12} | UNDER vs OVER | {b['name']}: {float(f_ov):<5} | Status: {'✅' if hedge.passes_liquidity_filter else '❌ ' + str(hedge.reject_reason)}")
+                                            opportunities.append(_build_opp(x, b["name"], f_un, hedge, f"Total {lne}", "OVER", "UNDER", roi, dt_ov, sp_ov))
+                                
+                                valid_un, dt_un, sp_un = validate_market_state(book_un, b.get("last_update"))
+                                if valid_un and f_ov:
+                                    hedge = evaluate_buy_hedge_from_asks(book_un.get("asks", []), f_ov)
                                     if hedge.passes_liquidity_filter:
                                         roi = round(float((hedge.locked_profit / hedge.total_outlay) * 100), 2) if hedge.total_outlay > 0 else 0.0
                                         if 0 < roi < 15.0:
-                                            opportunities.append(_build_opp(x, b["name"], f_ov, hedge, f"Total {lne}", "UNDER", "OVER", roi))
+                                            opportunities.append(_build_opp(x, b["name"], f_ov, hedge, f"Total {lne}", "UNDER", "OVER", roi, dt_un, sp_un))
 
-                    # --- Attribute 3: Spreads ---
                     elif mt in ['spread', 'spreads']:
                         try: lne = round(float(m.get("line", 0)), 1)
                         except: continue
@@ -299,18 +316,18 @@ def run() -> None:
                                 opp_nk = h_nk if p_nk == a_nk else a_nk
                                 f_opp = b["spreads"][inv].get(opp_nk)
                                 if f_opp:
-                                    asks = clients.get_clob_asks(toks[idx])
-                                    if asks:
-                                        hedge = evaluate_buy_hedge_from_asks(asks, f_opp)
-                                        logger.info(f"   [Spread {lne}] {b['name']:<12} | {t_nm[:10]} vs {opp_nk[:10]} | {b['name']}: {float(f_opp):<5} | Status: {'✅' if hedge.passes_liquidity_filter else '❌ ' + str(hedge.reject_reason)}")
+                                    book = clients.get_clob_book(toks[idx])
+                                    is_valid, delta_t, spread_pct = validate_market_state(book, b.get("last_update"))
+                                    
+                                    if is_valid:
+                                        hedge = evaluate_buy_hedge_from_asks(book.get("asks", []), f_opp)
                                         if hedge.passes_liquidity_filter:
                                             roi = round(float((hedge.locked_profit / hedge.total_outlay) * 100), 2) if hedge.total_outlay > 0 else 0.0
                                             if 0 < roi < 15.0:
-                                                opportunities.append(_build_opp(x, b["name"], f_opp, hedge, f"Spread {lne}", t_nm, f"{opp_nk} ({inv})", roi))
+                                                opportunities.append(_build_opp(x, b["name"], f_opp, hedge, f"Spread {lne}", t_nm, f"{opp_nk} ({inv})", roi, delta_t, spread_pct))
 
         # --- FINAL SUMMARY & GLOBAL ALERTS ---
         logger.info("\n" + "="*80)
-        
         final_alerts = build_global_alerts(opportunities, fiat_opportunities, limit=3)
         for msg in final_alerts:
             clients.send_telegram_alert(msg)
@@ -337,11 +354,12 @@ def _build_fiat_opp(x, b1_name, b2_name, odds1, odds2, m_tl, sel1, sel2, imp, ro
     )
 
 # --- HELPER FOR POLYMARKET ARBITRAGE ---
-def _build_opp(x, b_nm, f_o, hedge: HedgeEstimate, m_tl, p_sd, f_sd, roi):
+def _build_opp(x, b_nm, f_o, hedge: HedgeEstimate, m_tl, p_sd, f_sd, roi, delta_t, spread):
     return ArbitrageOpportunity(
         sport_key="nba", home_team=x['home'], away_team=x['away'], commence_time=format_to_local(x['time']),
         market_title=m_tl, selection_name=p_sd, fiat_selection=f_sd, bookmaker=b_nm, odds_decimal=float(f_o),
         shares=float(hedge.shares), vwap=float(hedge.vwap or 0), marginal_price=float(hedge.marginal_price or 0), 
         poly_spend=float(hedge.poly_spend), poly_fees=float(hedge.poly_fees), sportsbook_stake=float(hedge.sportsbook_stake),
-        total_outlay=float(hedge.total_outlay), locked_profit=float(hedge.locked_profit), expected_profit_percent=roi
+        total_outlay=float(hedge.total_outlay), locked_profit=float(hedge.locked_profit), expected_profit_percent=roi,
+        time_delta_seconds=delta_t, spread_percent=spread
     )
