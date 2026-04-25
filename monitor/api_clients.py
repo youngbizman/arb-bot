@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 import logging
 from typing import Any
 import requests
@@ -59,7 +58,7 @@ class ApiClients:
             logger.error(f"Polymarket request failed: {exc}")
             return []
 
-    # --- REFACTORED: Now returns bids, asks, and the exact timestamp ---
+    # UPDATED: Returns asks, bids, and timestamp for the new filters
     def get_clob_book(self, token_id: str) -> dict[str, Any]:
         if not str(token_id).strip(): return {"asks": [], "bids": [], "timestamp": "0"}
         url = "https://clob.polymarket.com/book"
