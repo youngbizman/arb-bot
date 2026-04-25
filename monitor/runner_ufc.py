@@ -4,14 +4,14 @@ import unicodedata
 import re
 from dataclasses import dataclass
 from typing import Iterable, Mapping, Optional
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal, getcontext
 from zoneinfo import ZoneInfo
 
 from .api_clients import ApiClients
 from .config import ConfigError, load_settings
 from .models import ArbitrageOpportunity, FiatArbitrageOpportunity
-from .alerts import format_mma_opportunity_alert, format_mma_fiat_opportunity_alert
+from .alerts import build_mma_global_alerts
 
 logger = logging.getLogger(__name__)
 getcontext().prec = 28
@@ -94,10 +94,10 @@ def evaluate_buy_hedge_from_asks(asks, decimal_odds, bankroll="100", fee_rate="0
 
 def clean_fighter_name(text: str) -> str:
     if not text: return ""
-    # Strip accents (Jiří Procházka -> Jiri Prochazka) natively
     text = unicodedata.normalize('NFKD', str(text)).encode('ASCII', 'ignore').decode('utf-8')
-    # Remove punctuation, lowercase it, and grab the last name
     text = re.sub(r'[^a-zA-Z\s]', '', text.lower())
+    # EXPLICIT FIX: If the outcome is 'draw', return 'draw' so we can ignore it later
+    if text.strip() == 'draw': return 'draw'
     parts = text.split()
     return parts[-1] if parts else ""
 
@@ -132,7 +132,13 @@ def run_ufc() -> None:
         raw_odds, raw_poly = clients.get_mma_fiat_data(), clients.get_mma_polymarket_events()
         
         fiat_games = {}
+        # GHOST FIGHT FILTER: Only look at fights in the next 14 days
+        cutoff_date = datetime.now(timezone.utc) + timedelta(days=14)
+
         for game in raw_odds:
+            commence_time = datetime.fromisoformat(game.get('commence_time').replace("Z", "+00:00"))
+            if commence_time > cutoff_date: continue # Ignore fantasy/future fights
+
             h, a = game.get('home_team'), game.get('away_team')
             if not h or not a: continue
             k = f"{clean_fighter_name(h)}_{clean_fighter_name(a)}"
@@ -143,6 +149,8 @@ def run_ufc() -> None:
                     if m.get('key') == 'h2h':
                         for o in m.get('outcomes', []):
                             nm, pr = clean_fighter_name(o.get('name')), o.get('price')
+                            # DRAW FILTER: Skip the draw outcome for the 2-way hedge
+                            if nm == 'draw': continue
                             if pr is not None: b_data["h2h"][nm] = Decimal(str(pr))
                 fiat_games[k]["bookies"].append(b_data)
 
@@ -163,12 +171,14 @@ def run_ufc() -> None:
                             imp = (Decimal("1")/o1) + (Decimal("1")/o2)
                             if imp < 1:
                                 roi = round(((1/float(imp))-1)*100, 2)
-                                if 0 < roi < 25.0: # MMA Sanity Filter bump
+                                if 0 < roi < 25.0:
                                     fiat_opportunities.append(_build_fiat_opp(x, b1["name"], b2["name"], o1, o2, "Moneyline", t_nm, opp_nk, imp, roi))
 
             # 2. Poly Scanner (UFC)
             target = next((e for e in raw_poly if h_nk in e.get('title','').lower() and a_nk in e.get('title','').lower()), None)
-            if not target: continue
+            if not target: 
+                logger.info(f"   [ML] Polymarket | Status: ❌ No matching market found")
+                continue
             
             for b in x["bookies"]:
                 for m in target.get('markets', []):
@@ -180,7 +190,11 @@ def run_ufc() -> None:
                     
                     if mt == 'moneyline' or mt == 'winner':
                         for idx, t_nm in enumerate(outs):
-                            p_nk, f_odds = clean_fighter_name(t_nm), b["h2h"].get(clean_fighter_name(t_nm))
+                            p_nk = clean_fighter_name(t_nm)
+                            # DRAW FILTER
+                            if p_nk == 'draw': continue
+                            
+                            f_odds = b["h2h"].get(p_nk)
                             if f_odds:
                                 book = clients.get_clob_book(toks[idx])
                                 opp_nk = h_nk if p_nk == a_nk else a_nk
@@ -189,27 +203,23 @@ def run_ufc() -> None:
                                     hedge = evaluate_buy_hedge_from_asks(book.get("asks", []), f_opp)
                                     is_v, dt, sp = validate_market_state(book, b.get("last_update"))
                                     if hedge.passes_liquidity_filter and not is_v:
-                                        hedge.passes_liquidity_filter = False
-                                        hedge.reject_reason = f"Async Data (Delta {dt:.1f}s, Spread {sp:.1f}%)"
+                                        hedge = HedgeEstimate(
+                                            hedge.best_ask, hedge.shares, hedge.sportsbook_stake, hedge.poly_spend,
+                                            hedge.poly_fees, hedge.total_outlay, hedge.vwap, hedge.marginal_price,
+                                            hedge.locked_profit, False, f"Async Data (Delta {dt:.1f}s, Spread {sp:.1f}%)"
+                                        )
+                                    # RESTORED CONSOLE LOGS
                                     logger.info(f"   [ML] {b['name']:<12} | {t_nm[:10]:<10} | {b['name']}: {float(f_opp):<5} | Status: {'✅' if hedge.passes_liquidity_filter else '❌ ' + str(hedge.reject_reason)}")
+                                    
                                     if hedge.passes_liquidity_filter:
                                         roi = round(float((hedge.locked_profit/hedge.total_outlay)*100), 2)
-                                        if 0 < roi < 25.0:  # MMA Sanity Filter bump
+                                        if 0 < roi < 25.0:
                                             opportunities.append(_build_opp(x, b["name"], f_opp, hedge, "Moneyline", t_nm, opp_nk, roi, dt, sp))
 
         logger.info("\n" + "="*80)
-        
-        # Sort and send MMA alerts
-        all_opps = []
-        for o in opportunities: all_opps.append({'profit': o.expected_profit_percent, 'msg': format_mma_opportunity_alert(o)})
-        for o in fiat_opportunities: all_opps.append({'profit': o.expected_profit_percent, 'msg': format_mma_fiat_opportunity_alert(o)})
-        
-        sorted_opps = sorted(all_opps, key=lambda x: x['profit'], reverse=True)[:3]
-        
-        for item in sorted_opps: 
-            clients.send_telegram_alert(item['msg'])
-            
-        logger.info(f"✅ UFC SCAN COMPLETE. Sent {len(sorted_opps)} alerts.")
+        final_alerts = build_mma_global_alerts(opportunities, fiat_opportunities, limit=3)
+        for msg in final_alerts: clients.send_telegram_alert(msg)
+        logger.info(f"✅ UFC SCAN COMPLETE. Sent {len(final_alerts)} alerts.")
         logger.info("="*80)
         
     finally: clients.close()
