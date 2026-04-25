@@ -31,6 +31,7 @@ class ApiClients:
         response.raise_for_status()
         return response.json()
 
+    # --- NBA METHODS ---
     def get_fiat_data(self) -> list[dict[str, Any]]:
         url = "https://api.the-odds-api.com/v4/sports/basketball_nba/odds"
         params = {
@@ -58,7 +59,7 @@ class ApiClients:
             logger.error(f"Polymarket request failed: {exc}")
             return []
 
-    # UPDATED: Returns asks, bids, and timestamp for the new filters
+    # --- SHARED POLYMARKET CLOB METHOD ---
     def get_clob_book(self, token_id: str) -> dict[str, Any]:
         if not str(token_id).strip(): return {"asks": [], "bids": [], "timestamp": "0"}
         url = "https://clob.polymarket.com/book"
@@ -75,6 +76,7 @@ class ApiClients:
             logger.warning(f"CLOB request failed for token {token_id}: {exc}")
             return {"asks": [], "bids": [], "timestamp": "0"}
 
+    # --- SHARED TELEGRAM SENDER ---
     def send_telegram_alert(self, message: str) -> bool:
         if not message.strip(): return False
         url = f"https://api.telegram.org/bot{self.settings.telegram_bot_token}/sendMessage"
@@ -89,3 +91,31 @@ class ApiClients:
 
     def close(self) -> None:
         self.session.close()
+
+    # --- MMA / UFC METHODS ---
+    def get_mma_fiat_data(self) -> list[dict[str, Any]]:
+        url = "https://api.the-odds-api.com/v4/sports/mma_mixed_martial_arts/odds"
+        params = {
+            "apiKey": self.settings.odds_api_key,
+            "regions": "eu,us",
+            "markets": "h2h",
+            "bookmakers": "pinnacle,onexbet,draftkings",
+        }
+        try:
+            data = self._get_json(url, params=params)
+            return data if isinstance(data, list) else []
+        except Exception as exc:
+            logger.error(f"MMA Odds API request failed: {exc}")
+            return []
+
+    def get_mma_polymarket_events(self) -> list[dict[str, Any]]:
+        url = "https://gamma-api.polymarket.com/events"
+        params = {"active": "true", "closed": "false", "limit": 300}
+        try:
+            data = self._get_json(url, params=params)
+            if isinstance(data, list): return data
+            if isinstance(data, dict): return data.get("events", [])
+            return []
+        except Exception as exc:
+            logger.error(f"MMA Polymarket request failed: {exc}")
+            return []
