@@ -256,7 +256,8 @@ def run_ufc() -> None:
                                 f_opp = b["h2h"].get(opp_nk)
                                 if f_opp:
                                     hedge = evaluate_buy_hedge_from_asks(book.get("asks", []), f_opp)
-                                    logger.info(f"   [ML] {b['name']:<12} | {t_nm[:10]:<10} | {b['name']}: {float(f_opp):<5} | Status: {'✅' if hedge.passes_liquidity_filter else '❌ ' + str(hedge.reject_reason)}")
+                                    poly_price = f"${float(hedge.best_ask):.2f}" if hedge.best_ask else "N/A"
+                                    logger.info(f"   [ML] {b['name']:<12} | {t_nm[:10]:<10} | {b['name']} Opp: {float(f_opp):<5} | Poly Ask: {poly_price:<5} | Status: {'✅' if hedge.passes_liquidity_filter else '❌ ' + str(hedge.reject_reason)}")
                                     if hedge.passes_liquidity_filter:
                                         roi = round(float((hedge.locked_profit/hedge.total_outlay)*100), 2)
                                         if 0 < roi < 25.0:
@@ -289,7 +290,8 @@ def run_ufc() -> None:
                             if f_opp:
                                 book = clients.get_clob_book(poly_tok)
                                 hedge = evaluate_buy_hedge_from_asks(book.get("asks", []), f_opp)
-                                logger.info(f"   [TOT] {b['name']:<11} | {poly_side[:10]:<10} | {b['name']}: {float(f_opp):<5} | Status: {'✅' if hedge.passes_liquidity_filter else '❌ ' + str(hedge.reject_reason)}")
+                                poly_price = f"${float(hedge.best_ask):.2f}" if hedge.best_ask else "N/A"
+                                logger.info(f"   [TOT] {b['name']:<11} | {poly_side[:10]:<10} | {b['name']} Opp: {float(f_opp):<5} | Poly Ask: {poly_price:<5} | Status: {'✅' if hedge.passes_liquidity_filter else '❌ ' + str(hedge.reject_reason)}")
                                 if hedge.passes_liquidity_filter:
                                     roi = round(float((hedge.locked_profit/hedge.total_outlay)*100), 2)
                                     if 0 < roi < 25.0:
