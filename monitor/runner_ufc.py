@@ -7,6 +7,7 @@ from typing import Iterable, Mapping, Optional
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, getcontext
 from zoneinfo import ZoneInfo
+from thefuzz import fuzz
 
 from .api_clients import ApiClients
 from .config import ConfigError, load_settings
@@ -92,7 +93,6 @@ def evaluate_buy_hedge_from_asks(asks, decimal_odds, bankroll="100", fee_rate="0
 
     return HedgeEstimate(best.price, q, (q/odds), cost, fees, total, vwap, marginal, profit, (reason is None), reason)
 
-# Pure Native Python String Cleaning (No thefuzz needed)
 def clean_fighter_name(text: str) -> str:
     if not text: return ""
     text = unicodedata.normalize('NFKD', str(text)).encode('ASCII', 'ignore').decode('utf-8')
@@ -101,10 +101,15 @@ def clean_fighter_name(text: str) -> str:
     parts = text.split()
     return parts[-1] if parts else ""
 
-def clean_poly_title(text: str) -> str:
+def clean_for_matching(text: str) -> str:
     if not text: return ""
     text = unicodedata.normalize('NFKD', str(text)).encode('ASCII', 'ignore').decode('utf-8').lower()
     return re.sub(r'[^a-z0-9\s]', '', text)
+
+def is_fighter_match(fiat_home: str, fiat_away: str, poly_title: str) -> bool:
+    fiat_str = clean_for_matching(f"{fiat_home} {fiat_away}")
+    poly_str = clean_for_matching(poly_title)
+    return fuzz.token_set_ratio(fiat_str, poly_str) > 75
 
 def format_to_local(iso: str) -> str:
     try: return datetime.fromisoformat(iso.replace("Z", "+00:00")).astimezone(ZoneInfo("America/Toronto")).strftime("%Y-%m-%d %I:%M %p")
@@ -137,7 +142,7 @@ def run_ufc() -> None:
                 }
                 
             for b in game.get("bookmakers", []):
-                b_data = {"name": b.get("title"), "h2h": {}, "totals": {}}
+                b_data = {"name": b.get("title"), "last_update": b.get("last_update"), "h2h": {}, "totals": {}}
                 for m in b.get("markets", []):
                     mk = m.get('key')
                     for o in m.get('outcomes', []):
@@ -165,6 +170,7 @@ def run_ufc() -> None:
                 for j in range(i + 1, len(x["bookies"])):
                     b1, b2 = x["bookies"][i], x["bookies"][j]
                     
+                    # Fiat H2H
                     for t_nm, o1 in b1["h2h"].items():
                         opp_nk = h_nk if t_nm == a_nk else a_nk
                         o2 = b2["h2h"].get(opp_nk)
@@ -175,6 +181,7 @@ def run_ufc() -> None:
                                 if 0 < roi < 25.0:
                                     fiat_opportunities.append(_build_fiat_opp(x, b1["name"], b2["name"], o1, o2, "Moneyline", t_nm, opp_nk, imp, roi))
                                     
+                    # Fiat Totals
                     for pt, t1_odds in b1.get("totals", {}).items():
                         t2_odds = b2.get("totals", {}).get(pt, {})
                         o1_over, o1_under = t1_odds.get('over'), t1_odds.get('under')
@@ -184,19 +191,19 @@ def run_ufc() -> None:
                             imp = (Decimal("1")/o1_over) + (Decimal("1")/o2_under)
                             if imp < 1:
                                 roi = round(((1/float(imp))-1)*100, 2)
-                                if 0 < roi < 25.0: fiat_opportunities.append(_build_fiat_opp(x, b1["name"], b2["name"], o1_over, o2_under, f"Total Rounds {pt}", "Over", "Under", imp, roi))
+                                if 0 < roi < 25.0:
+                                    fiat_opportunities.append(_build_fiat_opp(x, b1["name"], b2["name"], o1_over, o2_under, f"Total Rounds {pt}", "Over", "Under", imp, roi))
                         if o1_under and o2_over:
                             imp = (Decimal("1")/o1_under) + (Decimal("1")/o2_over)
                             if imp < 1:
                                 roi = round(((1/float(imp))-1)*100, 2)
-                                if 0 < roi < 25.0: fiat_opportunities.append(_build_fiat_opp(x, b1["name"], b2["name"], o1_under, o2_over, f"Total Rounds {pt}", "Under", "Over", imp, roi))
+                                if 0 < roi < 25.0:
+                                    fiat_opportunities.append(_build_fiat_opp(x, b1["name"], b2["name"], o1_under, o2_over, f"Total Rounds {pt}", "Under", "Over", imp, roi))
 
-            # 2. Poly Scanner (UFC - Native Matcher)
+            # 2. Poly Scanner (UFC - Advanced Fuzzy Matching)
             target = None
             for e in raw_poly:
-                poly_title = clean_poly_title(e.get('title', ''))
-                # If both fighters' last names are inside the Polymarket title, it's a match!
-                if h_nk in poly_title and a_nk in poly_title:
+                if is_fighter_match(x["home"], x["away"], e.get('title', '')):
                     target = e
                     break
                     
@@ -213,6 +220,7 @@ def run_ufc() -> None:
                         outs, toks = json.loads(m.get('outcomes')), json.loads(m.get('clobTokenIds'))
                     except: continue
                     
+                    # POLY MONEYLINE
                     if mt == 'moneyline' or mt == 'winner':
                         for idx, t_nm in enumerate(outs):
                             p_nk = clean_fighter_name(t_nm)
@@ -230,6 +238,7 @@ def run_ufc() -> None:
                                         if 0 < roi < 25.0:
                                             opportunities.append(_build_opp(x, b["name"], f_opp, hedge, "Moneyline", t_nm, opp_nk, roi, 0.0, 0.0))
 
+                    # POLY TOTAL ROUNDS
                     elif mt == 'round_over_under_match' or 'over/under' in question or 'total' in question:
                         line_match = re.search(r'(\d+\.5)', question)
                         if not line_match: continue
