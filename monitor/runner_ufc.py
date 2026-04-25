@@ -7,7 +7,6 @@ from typing import Iterable, Mapping, Optional
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, getcontext
 from zoneinfo import ZoneInfo
-from thefuzz import fuzz
 
 from .api_clients import ApiClients
 from .config import ConfigError, load_settings
@@ -93,6 +92,7 @@ def evaluate_buy_hedge_from_asks(asks, decimal_odds, bankroll="100", fee_rate="0
 
     return HedgeEstimate(best.price, q, (q/odds), cost, fees, total, vwap, marginal, profit, (reason is None), reason)
 
+# Pure Native Python String Cleaning (No thefuzz needed)
 def clean_fighter_name(text: str) -> str:
     if not text: return ""
     text = unicodedata.normalize('NFKD', str(text)).encode('ASCII', 'ignore').decode('utf-8')
@@ -101,36 +101,14 @@ def clean_fighter_name(text: str) -> str:
     parts = text.split()
     return parts[-1] if parts else ""
 
-def clean_for_matching(text: str) -> str:
+def clean_poly_title(text: str) -> str:
     if not text: return ""
     text = unicodedata.normalize('NFKD', str(text)).encode('ASCII', 'ignore').decode('utf-8').lower()
     return re.sub(r'[^a-z0-9\s]', '', text)
 
-def is_fighter_match(fiat_home: str, fiat_away: str, poly_title: str) -> bool:
-    fiat_str = clean_for_matching(f"{fiat_home} {fiat_away}")
-    poly_str = clean_for_matching(poly_title)
-    # token_set_ratio intercepts abbreviations and reversed name orders
-    return fuzz.token_set_ratio(fiat_str, poly_str) > 75
-
 def format_to_local(iso: str) -> str:
     try: return datetime.fromisoformat(iso.replace("Z", "+00:00")).astimezone(ZoneInfo("America/Toronto")).strftime("%Y-%m-%d %I:%M %p")
     except: return iso[:10]
-
-def parse_iso8601_to_epoch(t):
-    try: return int(datetime.fromisoformat(str(t).replace(" ", "T").replace("Z", "+00:00")).timestamp())
-    except: return 0
-
-def validate_market_state(book: dict, fiat_last_update: str) -> tuple[bool, float, float]:
-    poly_ts = float(book.get("timestamp") or 0)
-    if poly_ts > 1e11: poly_ts /= 1000.0  
-    fiat_ts = parse_iso8601_to_epoch(fiat_last_update)
-    delta_t = abs(fiat_ts - poly_ts) if fiat_ts > 0 else 999.0
-    asks = sorted([Decimal(str(r.get("price", "0"))) for r in book.get("asks", []) if Decimal(str(r.get("size", "0"))) > 0])
-    bids = sorted([Decimal(str(r.get("price", "0"))) for r in book.get("bids", []) if Decimal(str(r.get("size", "0"))) > 0], reverse=True)
-    best_ask = float(asks[0]) if asks else 1.0
-    best_bid = float(bids[0]) if bids else 0.0
-    spread = ((best_ask - best_bid) / best_ask) * 100 if best_ask > 0 else 100.0
-    return (delta_t <= 2.5 and spread <= 5.0), delta_t, spread
 
 def run_ufc() -> None:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -139,7 +117,7 @@ def run_ufc() -> None:
     clients = ApiClients(settings)
     
     try:
-        logger.info("📡 Initializing UFC/MMA Sync-Validated Sniper...")
+        logger.info("📡 Initializing UFC/MMA Sniper...")
         raw_odds, raw_poly = clients.get_mma_fiat_data(), clients.get_mma_polymarket_events()
         
         fiat_games = {}
@@ -159,7 +137,7 @@ def run_ufc() -> None:
                 }
                 
             for b in game.get("bookmakers", []):
-                b_data = {"name": b.get("title"), "last_update": b.get("last_update"), "h2h": {}, "totals": {}}
+                b_data = {"name": b.get("title"), "h2h": {}, "totals": {}}
                 for m in b.get("markets", []):
                     mk = m.get('key')
                     for o in m.get('outcomes', []):
@@ -187,7 +165,6 @@ def run_ufc() -> None:
                 for j in range(i + 1, len(x["bookies"])):
                     b1, b2 = x["bookies"][i], x["bookies"][j]
                     
-                    # Fiat H2H
                     for t_nm, o1 in b1["h2h"].items():
                         opp_nk = h_nk if t_nm == a_nk else a_nk
                         o2 = b2["h2h"].get(opp_nk)
@@ -198,7 +175,6 @@ def run_ufc() -> None:
                                 if 0 < roi < 25.0:
                                     fiat_opportunities.append(_build_fiat_opp(x, b1["name"], b2["name"], o1, o2, "Moneyline", t_nm, opp_nk, imp, roi))
                                     
-                    # Fiat Totals
                     for pt, t1_odds in b1.get("totals", {}).items():
                         t2_odds = b2.get("totals", {}).get(pt, {})
                         o1_over, o1_under = t1_odds.get('over'), t1_odds.get('under')
@@ -208,19 +184,19 @@ def run_ufc() -> None:
                             imp = (Decimal("1")/o1_over) + (Decimal("1")/o2_under)
                             if imp < 1:
                                 roi = round(((1/float(imp))-1)*100, 2)
-                                if 0 < roi < 25.0:
-                                    fiat_opportunities.append(_build_fiat_opp(x, b1["name"], b2["name"], o1_over, o2_under, f"Total Rounds {pt}", "Over", "Under", imp, roi))
+                                if 0 < roi < 25.0: fiat_opportunities.append(_build_fiat_opp(x, b1["name"], b2["name"], o1_over, o2_under, f"Total Rounds {pt}", "Over", "Under", imp, roi))
                         if o1_under and o2_over:
                             imp = (Decimal("1")/o1_under) + (Decimal("1")/o2_over)
                             if imp < 1:
                                 roi = round(((1/float(imp))-1)*100, 2)
-                                if 0 < roi < 25.0:
-                                    fiat_opportunities.append(_build_fiat_opp(x, b1["name"], b2["name"], o1_under, o2_over, f"Total Rounds {pt}", "Under", "Over", imp, roi))
+                                if 0 < roi < 25.0: fiat_opportunities.append(_build_fiat_opp(x, b1["name"], b2["name"], o1_under, o2_over, f"Total Rounds {pt}", "Under", "Over", imp, roi))
 
-            # 2. Poly Scanner (UFC - Advanced Fuzzy Matching)
+            # 2. Poly Scanner (UFC - Native Matcher)
             target = None
             for e in raw_poly:
-                if is_fighter_match(x["home"], x["away"], e.get('title', '')):
+                poly_title = clean_poly_title(e.get('title', ''))
+                # If both fighters' last names are inside the Polymarket title, it's a match!
+                if h_nk in poly_title and a_nk in poly_title:
                     target = e
                     break
                     
@@ -237,7 +213,6 @@ def run_ufc() -> None:
                         outs, toks = json.loads(m.get('outcomes')), json.loads(m.get('clobTokenIds'))
                     except: continue
                     
-                    # POLY MONEYLINE
                     if mt == 'moneyline' or mt == 'winner':
                         for idx, t_nm in enumerate(outs):
                             p_nk = clean_fighter_name(t_nm)
@@ -249,20 +224,12 @@ def run_ufc() -> None:
                                 f_opp = b["h2h"].get(opp_nk)
                                 if f_opp:
                                     hedge = evaluate_buy_hedge_from_asks(book.get("asks", []), f_opp)
-                                    is_v, dt, sp = validate_market_state(book, b.get("last_update"))
-                                    if hedge.passes_liquidity_filter and not is_v:
-                                        hedge = HedgeEstimate(
-                                            hedge.best_ask, hedge.shares, hedge.sportsbook_stake, hedge.poly_spend,
-                                            hedge.poly_fees, hedge.total_outlay, hedge.vwap, hedge.marginal_price,
-                                            hedge.locked_profit, False, f"Async Data (Delta {dt:.1f}s, Spread {sp:.1f}%)"
-                                        )
                                     logger.info(f"   [ML] {b['name']:<12} | {t_nm[:10]:<10} | {b['name']}: {float(f_opp):<5} | Status: {'✅' if hedge.passes_liquidity_filter else '❌ ' + str(hedge.reject_reason)}")
                                     if hedge.passes_liquidity_filter:
                                         roi = round(float((hedge.locked_profit/hedge.total_outlay)*100), 2)
                                         if 0 < roi < 25.0:
-                                            opportunities.append(_build_opp(x, b["name"], f_opp, hedge, "Moneyline", t_nm, opp_nk, roi, dt, sp))
+                                            opportunities.append(_build_opp(x, b["name"], f_opp, hedge, "Moneyline", t_nm, opp_nk, roi, 0.0, 0.0))
 
-                    # POLY TOTAL ROUNDS
                     elif mt == 'round_over_under_match' or 'over/under' in question or 'total' in question:
                         line_match = re.search(r'(\d+\.5)', question)
                         if not line_match: continue
@@ -290,18 +257,11 @@ def run_ufc() -> None:
                             if f_opp:
                                 book = clients.get_clob_book(poly_tok)
                                 hedge = evaluate_buy_hedge_from_asks(book.get("asks", []), f_opp)
-                                is_v, dt, sp = validate_market_state(book, b.get("last_update"))
-                                if hedge.passes_liquidity_filter and not is_v:
-                                    hedge = HedgeEstimate(
-                                        hedge.best_ask, hedge.shares, hedge.sportsbook_stake, hedge.poly_spend,
-                                        hedge.poly_fees, hedge.total_outlay, hedge.vwap, hedge.marginal_price,
-                                        hedge.locked_profit, False, f"Async Data (Delta {dt:.1f}s, Spread {sp:.1f}%)"
-                                    )
                                 logger.info(f"   [TOT] {b['name']:<11} | {poly_side[:10]:<10} | {b['name']}: {float(f_opp):<5} | Status: {'✅' if hedge.passes_liquidity_filter else '❌ ' + str(hedge.reject_reason)}")
                                 if hedge.passes_liquidity_filter:
                                     roi = round(float((hedge.locked_profit/hedge.total_outlay)*100), 2)
                                     if 0 < roi < 25.0:
-                                        opportunities.append(_build_opp(x, b["name"], f_opp, hedge, f"Total Rounds {line}", poly_side, fiat_side, roi, dt, sp))
+                                        opportunities.append(_build_opp(x, b["name"], f_opp, hedge, f"Total Rounds {line}", poly_side, fiat_side, roi, 0.0, 0.0))
 
         logger.info("\n" + "="*80)
         final_alerts = build_mma_global_alerts(opportunities, fiat_opportunities, limit=3)
