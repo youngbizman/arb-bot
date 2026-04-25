@@ -1,4 +1,4 @@
-name: Arbitrage Scanner
+name: NBA Arbitrage Sniper
 
 on:
   workflow_dispatch:
