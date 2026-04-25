@@ -96,10 +96,13 @@ def clean_fighter_name(text: str) -> str:
     if not text: return ""
     text = unicodedata.normalize('NFKD', str(text)).encode('ASCII', 'ignore').decode('utf-8')
     text = re.sub(r'[^a-zA-Z\s]', '', text.lower())
-    # EXPLICIT FIX: If the outcome is 'draw', return 'draw' so we can ignore it later
     if text.strip() == 'draw': return 'draw'
     parts = text.split()
     return parts[-1] if parts else ""
+
+# NEW: Helper to clean search targets to bypass accents [cite: 881]
+def clean_for_matching(text: str) -> str:
+    return unicodedata.normalize('NFKD', str(text or "")).encode('ASCII', 'ignore').decode('utf-8').lower()
 
 def format_to_local(iso: str) -> str:
     try: return datetime.fromisoformat(iso.replace("Z", "+00:00")).astimezone(ZoneInfo("America/Toronto")).strftime("%Y-%m-%d %I:%M %p")
@@ -132,13 +135,11 @@ def run_ufc() -> None:
         raw_odds, raw_poly = clients.get_mma_fiat_data(), clients.get_mma_polymarket_events()
         
         fiat_games = {}
-        # GHOST FIGHT FILTER: Only look at fights in the next 14 days
         cutoff_date = datetime.now(timezone.utc) + timedelta(days=14)
 
         for game in raw_odds:
             commence_time = datetime.fromisoformat(game.get('commence_time').replace("Z", "+00:00"))
-            if commence_time > cutoff_date: continue # Ignore fantasy/future fights
-
+            if commence_time > cutoff_date: continue 
             h, a = game.get('home_team'), game.get('away_team')
             if not h or not a: continue
             k = f"{clean_fighter_name(h)}_{clean_fighter_name(a)}"
@@ -149,7 +150,6 @@ def run_ufc() -> None:
                     if m.get('key') == 'h2h':
                         for o in m.get('outcomes', []):
                             nm, pr = clean_fighter_name(o.get('name')), o.get('price')
-                            # DRAW FILTER: Skip the draw outcome for the 2-way hedge
                             if nm == 'draw': continue
                             if pr is not None: b_data["h2h"][nm] = Decimal(str(pr))
                 fiat_games[k]["bookies"].append(b_data)
@@ -174,8 +174,8 @@ def run_ufc() -> None:
                                 if 0 < roi < 25.0:
                                     fiat_opportunities.append(_build_fiat_opp(x, b1["name"], b2["name"], o1, o2, "Moneyline", t_nm, opp_nk, imp, roi))
 
-            # 2. Poly Scanner (UFC)
-            target = next((e for e in raw_poly if h_nk in e.get('title','').lower() and a_nk in e.get('title','').lower()), None)
+            # 2. Poly Scanner (UFC) - FIXED: Cleaning titles before searching [cite: 881]
+            target = next((e for e in raw_poly if h_nk in clean_for_matching(e.get('title')) and a_nk in clean_for_matching(e.get('title'))), None)
             if not target: 
                 logger.info(f"   [ML] Polymarket | Status: ❌ No matching market found")
                 continue
@@ -191,9 +191,7 @@ def run_ufc() -> None:
                     if mt == 'moneyline' or mt == 'winner':
                         for idx, t_nm in enumerate(outs):
                             p_nk = clean_fighter_name(t_nm)
-                            # DRAW FILTER
                             if p_nk == 'draw': continue
-                            
                             f_odds = b["h2h"].get(p_nk)
                             if f_odds:
                                 book = clients.get_clob_book(toks[idx])
@@ -208,7 +206,7 @@ def run_ufc() -> None:
                                             hedge.poly_fees, hedge.total_outlay, hedge.vwap, hedge.marginal_price,
                                             hedge.locked_profit, False, f"Async Data (Delta {dt:.1f}s, Spread {sp:.1f}%)"
                                         )
-                                    # RESTORED CONSOLE LOGS
+                                    # RESTORED STATUS LOGS
                                     logger.info(f"   [ML] {b['name']:<12} | {t_nm[:10]:<10} | {b['name']}: {float(f_opp):<5} | Status: {'✅' if hedge.passes_liquidity_filter else '❌ ' + str(hedge.reject_reason)}")
                                     
                                     if hedge.passes_liquidity_filter:
