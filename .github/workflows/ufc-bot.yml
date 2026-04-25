@@ -28,7 +28,7 @@ jobs:
       - name: Run UFC Scanner
         env:
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
-          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }} # Change this side to TELEGRAM_TOKEN
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}  # Corrected name
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           python main_ufc.py
