@@ -26,7 +26,6 @@ class ArbitrageOpportunity:
     bookmaker: str
     odds_decimal: float
     
-    # --- Professional Financial Metrics ---
     shares: float      
     vwap: float
     marginal_price: float
@@ -37,7 +36,7 @@ class ArbitrageOpportunity:
     locked_profit: float
     expected_profit_percent: float
     
-    # --- Deep State Validation Metrics ---
+    # Validation metrics (hidden)
     time_delta_seconds: float
     spread_percent: float
     
@@ -51,17 +50,14 @@ class FiatArbitrageOpportunity:
     away_team: str
     commence_time: str
     market_title: str
-    
     bookmaker_1: str
     selection_1: str
     odds_1: float
     stake_1: float
-    
     bookmaker_2: str
     selection_2: str
     odds_2: float
     stake_2: float
-    
     implied_total: float
     payout: float      
     expected_profit_percent: float
@@ -76,15 +72,5 @@ class HealthSummary:
     request_errors: int = 0
 
     def __post_init__(self) -> None:
-        fields_to_check = {
-            "odds_events_seen": self.odds_events_seen,
-            "polymarket_events_seen": self.polymarket_events_seen,
-            "matched_pairs": self.matched_pairs,
-            "opportunities_found": self.opportunities_found,
-            "parse_errors": self.parse_errors,
-            "request_errors": self.request_errors,
-        }
-
-        for field_name, value in fields_to_check.items():
-            if value < 0:
-                raise ValueError(f"{field_name} cannot be negative")
+        for f, v in self.__dict__.items():
+            if isinstance(v, int) and v < 0: raise ValueError(f"{f} cannot be negative")
