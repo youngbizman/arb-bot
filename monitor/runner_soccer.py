@@ -119,7 +119,8 @@ def run_soccer() -> None:
         raw_odds, raw_poly = clients.get_soccer_fiat_data(), clients.get_soccer_polymarket_events()
         
         fiat_games = {}
-        cutoff_date = datetime.now(timezone.utc) + timedelta(days=3)
+        # UPDATED: Cutoff changed from 3 days to exactly 80 hours
+        cutoff_date = datetime.now(timezone.utc) + timedelta(hours=80)
 
         for game in raw_odds:
             commence_time = datetime.fromisoformat(game.get('commence_time').replace("Z", "+00:00"))
