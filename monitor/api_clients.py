@@ -109,7 +109,6 @@ class ApiClients:
             return []
 
     def get_mma_polymarket_events(self) -> list[dict[str, Any]]:
-        # FIXED: Deep Pagination up to 5,000 events to ensure UFC is found
         url = "https://gamma-api.polymarket.com/events"
         all_events = []
         for offset in range(0, 5000, 100):
@@ -129,7 +128,7 @@ class ApiClients:
                 break
         return all_events
 
-# --- SOCCER / FOOTBALL METHODS ---
+    # --- SOCCER / FOOTBALL METHODS ---
     def get_soccer_fiat_data(self) -> list[dict[str, Any]]:
         # Target the top 3 most liquid leagues to preserve API credits
         leagues = ["soccer_epl", "soccer_spain_la_liga", "soccer_uefa_champs_league"]
@@ -146,18 +145,15 @@ class ApiClients:
                 data = self._get_json(url, params=params)
                 if isinstance(data, list): 
                     all_data.extend(data)
-            except requests.exceptions.HTTPError as exc:
-                if exc.response.status_code == 404:
-                    logger.warning(f"   [INFO] ⚽ {league} is currently inactive or between rounds. Skipping...")
+            except Exception as exc:
+                # Foolproof 404 check: Just look for the number 404 in the string
+                if "404" in str(exc):
+                    logger.info(f"   [INFO] ⚽ {league} is currently inactive or between rounds. Skipping safely...")
                 else:
                     logger.error(f"Soccer Odds API request failed for {league}: {exc}")
-            except Exception as exc:
-                logger.error(f"Soccer Odds API request failed for {league}: {exc}")
-                
         return all_data
 
     def get_soccer_polymarket_events(self) -> list[dict[str, Any]]:
-        # Deep Pagination up to 5,000 events to ensure global soccer is found
         url = "https://gamma-api.polymarket.com/events"
         all_events = []
         for offset in range(0, 5000, 100):
