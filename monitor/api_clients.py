@@ -146,8 +146,14 @@ class ApiClients:
                 data = self._get_json(url, params=params)
                 if isinstance(data, list): 
                     all_data.extend(data)
+            except requests.exceptions.HTTPError as exc:
+                if exc.response.status_code == 404:
+                    logger.warning(f"   [INFO] ⚽ {league} is currently inactive or between rounds. Skipping...")
+                else:
+                    logger.error(f"Soccer Odds API request failed for {league}: {exc}")
             except Exception as exc:
                 logger.error(f"Soccer Odds API request failed for {league}: {exc}")
+                
         return all_data
 
     def get_soccer_polymarket_events(self) -> list[dict[str, Any]]:
