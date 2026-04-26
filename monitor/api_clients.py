@@ -128,3 +128,45 @@ class ApiClients:
                 logger.error(f"MMA Polymarket pagination failed at offset {offset}: {exc}")
                 break
         return all_events
+
+# --- SOCCER / FOOTBALL METHODS ---
+    def get_soccer_fiat_data(self) -> list[dict[str, Any]]:
+        # Target the top 3 most liquid leagues to preserve API credits
+        leagues = ["soccer_epl", "soccer_spain_la_liga", "soccer_uefa_champs_league"]
+        all_data = []
+        for league in leagues:
+            url = f"https://api.the-odds-api.com/v4/sports/{league}/odds"
+            params = {
+                "apiKey": self.settings.odds_api_key,
+                "regions": "eu,us",
+                "markets": "h2h,totals,btts", # Fetching the Holy Trinity
+                "bookmakers": "pinnacle,onexbet",
+            }
+            try:
+                data = self._get_json(url, params=params)
+                if isinstance(data, list): 
+                    all_data.extend(data)
+            except Exception as exc:
+                logger.error(f"Soccer Odds API request failed for {league}: {exc}")
+        return all_data
+
+    def get_soccer_polymarket_events(self) -> list[dict[str, Any]]:
+        # Deep Pagination up to 5,000 events to ensure global soccer is found
+        url = "https://gamma-api.polymarket.com/events"
+        all_events = []
+        for offset in range(0, 5000, 100):
+            params = {"active": "true", "closed": "false", "limit": 100, "offset": offset}
+            try:
+                data = self._get_json(url, params=params)
+                if isinstance(data, list): 
+                    all_events.extend(data)
+                    if len(data) < 100: break
+                elif isinstance(data, dict): 
+                    events = data.get("events", [])
+                    all_events.extend(events)
+                    if len(events) < 100: break
+                else: break
+            except Exception as exc:
+                logger.error(f"Soccer Polymarket pagination failed at offset {offset}: {exc}")
+                break
+        return all_events
