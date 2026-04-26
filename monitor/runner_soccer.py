@@ -100,9 +100,25 @@ def clean_for_matching(text: str) -> str:
 
 def is_team_match(fiat_team: str, poly_text: str) -> bool:
     if not poly_text: return False
+    
+    # Common soccer nicknames
+    nicknames = {
+        "paris saint germain": "psg",
+        "manchester city": "man city",
+        "manchester united": "man utd",
+        "atletico madrid": "atletico",
+        "tottenham hotspur": "spurs"
+    }
+    
     f_str = clean_for_matching(fiat_team)
     p_str = clean_for_matching(poly_text)
-    return fuzz.token_set_ratio(f_str, p_str) > 70 
+    
+    # Check for nicknames first
+    for full, short in nicknames.items():
+        if full in f_str: f_str = f_str.replace(full, short)
+        if full in p_str: p_str = p_str.replace(full, short)
+
+    return fuzz.token_set_ratio(f_str, p_str) > 75
 
 def format_to_local(iso: str) -> str:
     try: return datetime.fromisoformat(iso.replace("Z", "+00:00")).astimezone(ZoneInfo("America/Toronto")).strftime("%Y-%m-%d %I:%M %p")
