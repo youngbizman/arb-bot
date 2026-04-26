@@ -102,7 +102,7 @@ def is_team_match(fiat_team: str, poly_text: str) -> bool:
     if not poly_text: return False
     f_str = clean_for_matching(fiat_team)
     p_str = clean_for_matching(poly_text)
-    return fuzz.token_set_ratio(f_str, p_str) > 70 # Slightly looser for soccer abbreviations (e.g. Man City)
+    return fuzz.token_set_ratio(f_str, p_str) > 70 
 
 def format_to_local(iso: str) -> str:
     try: return datetime.fromisoformat(iso.replace("Z", "+00:00")).astimezone(ZoneInfo("America/Toronto")).strftime("%Y-%m-%d %I:%M %p")
@@ -115,11 +115,10 @@ def run_soccer() -> None:
     clients = ApiClients(settings)
     
     try:
-        logger.info("📡 Initializing Global Soccer Sniper (Synthesized Double-Chance)...")
+        logger.info("📡 Initializing Global Soccer Sniper...")
         raw_odds, raw_poly = clients.get_soccer_fiat_data(), clients.get_soccer_polymarket_events()
         
         fiat_games = {}
-        # RESEARCH: Soccer liquidity is thin until ~3 days before kickoff.
         cutoff_date = datetime.now(timezone.utc) + timedelta(days=3)
 
         for game in raw_odds:
@@ -136,7 +135,7 @@ def run_soccer() -> None:
                 }
                 
             for b in game.get("bookmakers", []):
-                b_data = {"name": b.get("title"), "h2h": {}, "totals": {}, "btts": {}}
+                b_data = {"name": b.get("title"), "h2h": {}, "totals": {}}
                 for m in b.get("markets", []):
                     mk = m.get('key')
                     for o in m.get('outcomes', []):
@@ -149,8 +148,6 @@ def run_soccer() -> None:
                             pt_float = float(pt)
                             if pt_float not in b_data["totals"]: b_data["totals"][pt_float] = {}
                             b_data["totals"][pt_float][nm.lower()] = Decimal(str(pr))
-                        elif mk == 'btts' and pr is not None:
-                            b_data["btts"][nm.lower()] = Decimal(str(pr))
                 fiat_games[k]["bookies"].append(b_data)
 
         opportunities, fiat_opportunities = [], []
@@ -162,7 +159,6 @@ def run_soccer() -> None:
             # 1. Poly Scanner (Soccer)
             target = None
             for e in raw_poly:
-                # Grouped Event Check
                 if is_team_match(h_nk, e.get('title', '')) and is_team_match(a_nk, e.get('title', '')):
                     target = e
                     break
@@ -194,13 +190,11 @@ def run_soccer() -> None:
                         elif is_team_match(a_nk, question): team_in_q = a_nk
                         
                         if team_in_q:
-                            # To synthesize a Double Chance (e.g. Draw or Away), we buy the "NO" token on the Home Team
-                            # and we hedge it by buying the Home Team to "WIN" on the fiat bookmaker.
                             for idx, out_lbl in enumerate(outs):
                                 out_lbl = out_lbl.lower()
                                 if out_lbl == 'no':
                                     poly_tok = toks[idx]
-                                    f_opp = b["h2h"].get(team_in_q) # Hedge with the exact team
+                                    f_opp = b["h2h"].get(team_in_q)
                                     
                                     if f_opp:
                                         book = clients.get_clob_book(poly_tok)
@@ -211,35 +205,7 @@ def run_soccer() -> None:
                                             roi = round(float((hedge.locked_profit/hedge.total_outlay)*100), 2)
                                             if 0 < roi < 15.0: opportunities.append(_build_opp(x, b["name"], f_opp, hedge, "Synthesized Double Chance", f"NO {team_in_q}", f"{team_in_q} to Win", roi, 0.0, 0.0))
 
-                    # MARKET 2: BOTH TEAMS TO SCORE (BTTS)
-                    elif 'both teams to score' in question or 'btts' in question:
-                        fiat_yes = b["btts"].get('yes')
-                        fiat_no = b["btts"].get('no')
-
-                        for idx, out_lbl in enumerate(outs):
-                            out_lbl = out_lbl.lower()
-                            poly_tok = toks[idx]
-                            
-                            f_opp, poly_side, fiat_side = None, "", ""
-                            if out_lbl == 'yes' and fiat_no:
-                                f_opp = fiat_no
-                                poly_side = "BTTS Yes"
-                                fiat_side = "BTTS No"
-                            elif out_lbl == 'no' and fiat_yes:
-                                f_opp = fiat_yes
-                                poly_side = "BTTS No"
-                                fiat_side = "BTTS Yes"
-                            
-                            if f_opp:
-                                book = clients.get_clob_book(poly_tok)
-                                hedge = evaluate_buy_hedge_from_asks(book.get("asks", []), f_opp)
-                                poly_price = f"${float(hedge.best_ask):.2f}" if hedge.best_ask else "N/A"
-                                logger.info(f"   [BTTS] {b['name']:<11} | {poly_side[:10]:<10} | {b['name']} Opp: {float(f_opp):<5} | Poly Ask: {poly_price:<5} | Status: {'✅' if hedge.passes_liquidity_filter else '❌ ' + str(hedge.reject_reason)}")
-                                if hedge.passes_liquidity_filter:
-                                    roi = round(float((hedge.locked_profit/hedge.total_outlay)*100), 2)
-                                    if 0 < roi < 15.0: opportunities.append(_build_opp(x, b["name"], f_opp, hedge, "Both Teams To Score", poly_side, fiat_side, roi, 0.0, 0.0))
-
-                    # MARKET 3: TOTAL GOALS (OVER/UNDER)
+                    # MARKET 2: TOTAL GOALS (OVER/UNDER)
                     elif 'over' in question or 'under' in question or 'goals' in question:
                         line_match = re.search(r'(\d+\.5)', question)
                         if not line_match: continue
