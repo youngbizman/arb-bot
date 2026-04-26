@@ -130,7 +130,6 @@ class ApiClients:
 
     # --- SOCCER / FOOTBALL METHODS ---
     def get_soccer_fiat_data(self) -> list[dict[str, Any]]:
-        # The ultimate 7-league global soccer list
         leagues = [
             "soccer_epl",                   # Premier League
             "soccer_spain_la_liga",         # La Liga
@@ -146,7 +145,7 @@ class ApiClients:
             params = {
                 "apiKey": self.settings.odds_api_key,
                 "regions": "eu,us",
-                "markets": "h2h,totals,btts", 
+                "markets": "h2h,totals",  # FIXED: Removed BTTS to prevent 422 error
                 "bookmakers": "pinnacle,onexbet",
             }
             try:
@@ -154,7 +153,6 @@ class ApiClients:
                 if isinstance(data, list): 
                     all_data.extend(data)
             except requests.exceptions.HTTPError as exc:
-                # 100% Bulletproof 404 Check
                 if exc.response is not None and exc.response.status_code == 404:
                     logger.info(f"   [INFO] ⚽ {league} is currently inactive (404). Skipping safely...")
                 else:
