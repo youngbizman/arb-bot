@@ -154,11 +154,11 @@ def run() -> None:
                     
                     is_live = now_utc >= commence_utc
                     
-                    # Drop Live data if older than 120 seconds (Frozen Bookie protection)
-                    if is_live and age_seconds > 120:
+                    # Strict 120-second latency cutoff for live games
+                    if is_live and age_seconds > 120: 
                         continue
-                    # Drop Pre-match data if older than 20 minutes
-                    if not is_live and age_seconds > 1200:
+                    # Relaxed 24-hour cutoff for soft books (Bet365) during pre-match
+                    if not is_live and age_seconds > 86400: 
                         continue
 
                 b_data = {"name": b.get("title"), "last_update": last_update_str, "h2h": {}, "totals": {}, "spreads": {}}
