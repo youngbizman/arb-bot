@@ -124,18 +124,6 @@ def format_to_local(iso: str) -> str:
     try: return datetime.fromisoformat(iso.replace("Z", "+00:00")).astimezone(ZoneInfo("America/Toronto")).strftime("%Y-%m-%d %I:%M %p")
     except: return iso[:10]
 
-def parse_iso8601_to_epoch(t):
-    if not t: return 0
-    try: return int(datetime.fromisoformat(str(t).replace(" ", "T").replace("Z", "+00:00")).timestamp())
-    except: return 0
-
-def is_target_single_game(f_t, p_s, p_e):
-    tf, ts, te = parse_iso8601_to_epoch(f_t), parse_iso8601_to_epoch(p_s), parse_iso8601_to_epoch(p_e)
-    if tf == 0: return False
-    if ts > 0 and abs(ts - tf) > 86400: return False
-    if te > 0 and (te - tf) > 172800: return False
-    return True
-
 def run_soccer() -> None:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     try: settings = load_settings()
@@ -166,6 +154,7 @@ def run_soccer() -> None:
                 }
                 
             for b in game.get("bookmakers", []):
+                # Stale Data Firewall (Protects against finished/live games)
                 last_update_str = b.get("last_update")
                 if last_update_str:
                     last_update = datetime.fromisoformat(last_update_str.replace("Z", "+00:00"))
@@ -197,13 +186,18 @@ def run_soccer() -> None:
             logger.info(f"\n⚽ MATCHED: {x['home']} vs {x['away']} | Local Time: {format_to_local(x['time'])}")
             logger.info("-" * 80)
 
+            # RESTORED: Fuzzy Matcher & Nickname Dictionary logic
             target = None
             for e in raw_poly:
-                title = e.get('title', '').lower()
-                if h_nk in title and a_nk in title:
-                    if is_target_single_game(x["time"], e.get("gameStartTime"), e.get("endDate")):
+                if is_team_match(h_nk, e.get('title', '')) and is_team_match(a_nk, e.get('title', '')):
+                    target = e
+                    break
+                for m in e.get('markets', []):
+                    market_text = f"{m.get('question', '')} {m.get('groupItemTitle', '')}"
+                    if is_team_match(h_nk, market_text) and is_team_match(a_nk, market_text):
                         target = e
                         break
+                if target: break
                         
             if not target: 
                 logger.info(f"   [INFO] Polymarket | Status: ❌ No matching market found")
