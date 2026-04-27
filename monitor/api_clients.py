@@ -38,7 +38,7 @@ class ApiClients:
             "apiKey": self.settings.odds_api_key,
             "regions": "eu,us",
             "markets": "h2h,totals,spreads",
-            "bookmakers": "pinnacle,onexbet",
+            "bookmakers": "pinnacle,onexbet,bet365",
         }
         try:
             data = self._get_json(url, params=params)
@@ -99,7 +99,7 @@ class ApiClients:
             "apiKey": self.settings.odds_api_key,
             "regions": "eu,us",
             "markets": "h2h,totals", 
-            "bookmakers": "pinnacle,onexbet",
+            "bookmakers": "pinnacle,onexbet,bet365",
         }
         try:
             data = self._get_json(url, params=params)
@@ -146,7 +146,7 @@ class ApiClients:
                 "apiKey": self.settings.odds_api_key,
                 "regions": "eu,us",
                 "markets": "h2h,totals",  # FIXED: Removed BTTS to prevent 422 error
-                "bookmakers": "pinnacle,onexbet",
+                "bookmakers": "pinnacle,onexbet,bet365",
             }
             try:
                 data = self._get_json(url, params=params)
