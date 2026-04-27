@@ -159,13 +159,19 @@ def run_soccer() -> None:
             for b in game.get("bookmakers", []):
                 # Stale Data Firewall (Protects against finished/live games)
                 last_update_str = b.get("last_update")
+                last_update_str = b.get("last_update")
                 if last_update_str:
                     last_update = datetime.fromisoformat(last_update_str.replace("Z", "+00:00"))
                     age_seconds = (now_utc - last_update).total_seconds()
+                    
                     is_live = now_utc >= commence_utc
                     
-                    if is_live and age_seconds > 120: continue
-                    if not is_live and age_seconds > 1200: continue
+                    # Strict 120-second latency cutoff for live games
+                    if is_live and age_seconds > 120: 
+                        continue
+                    # Relaxed 24-hour cutoff for soft books (Bet365) during pre-match
+                    if not is_live and age_seconds > 86400: 
+                        continue
 
                 b_data = {"name": b.get("title"), "h2h": {}, "totals": {}}
                 for m in b.get("markets", []):
