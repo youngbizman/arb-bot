@@ -98,7 +98,6 @@ def evaluate_buy_hedge_from_asks(asks, decimal_odds, bankroll="100", fee_rate="0
 def clean_for_matching(text: str) -> str:
     if not text: return ""
     text = unicodedata.normalize('NFKD', str(text)).encode('ASCII', 'ignore').decode('utf-8').lower()
-    # FIX: Convert hyphens to spaces before stripping punctuation
     text = text.replace('-', ' ')
     return re.sub(r'[^a-z0-9\s]', '', text)
 
@@ -111,7 +110,7 @@ def is_team_match(fiat_team: str, poly_text: str) -> bool:
         "atletico madrid": "atletico",
         "tottenham hotspur": "spurs",
         "bayern munich": "bayern",
-        "bayern munchen": "bayern",  # Added German spelling
+        "bayern munchen": "bayern",  
         "borussia dortmund": "dortmund",
         "ac milan": "milan",
         "internazionale": "inter"
@@ -134,7 +133,7 @@ def run_soccer() -> None:
     clients = ApiClients(settings)
     
     try:
-        logger.info("📡 Initializing Global Soccer Sniper (Time-Gated / Live Protected)...")
+        logger.info("📡 Initializing Global Soccer Sniper (Pre-Match Hard Kill)...")
         raw_odds, raw_poly = clients.get_soccer_fiat_data(), clients.get_soccer_polymarket_events()
         
         fiat_games = {}
@@ -157,8 +156,7 @@ def run_soccer() -> None:
                 }
                 
             for b in game.get("bookmakers", []):
-                # Stale Data Firewall (Protects against finished/live games)
-                last_update_str = b.get("last_update")
+                # Stale Data Firewall (Protects against finished/live games and stale scrapes)
                 last_update_str = b.get("last_update")
                 if last_update_str:
                     last_update = datetime.fromisoformat(last_update_str.replace("Z", "+00:00"))
@@ -166,11 +164,12 @@ def run_soccer() -> None:
                     
                     is_live = now_utc >= commence_utc
                     
-                    # Strict 120-second latency cutoff for live games
-                    if is_live and age_seconds > 120: 
+                    # HARD KILL: Drop all live games entirely to prevent Pinnacle Ghost Lines
+                    if is_live: 
                         continue
-                    # Relaxed 24-hour cutoff for soft books (Bet365) during pre-match
-                    if not is_live and age_seconds > 86400: 
+                    
+                    # Strict 20-minute (1200s) cutoff for pre-match data 
+                    if not is_live and age_seconds > 1200: 
                         continue
 
                 b_data = {"name": b.get("title"), "h2h": {}, "totals": {}}
@@ -195,7 +194,6 @@ def run_soccer() -> None:
             logger.info(f"\n⚽ MATCHED: {x['home']} vs {x['away']} | Local Time: {format_to_local(x['time'])}")
             logger.info("-" * 80)
 
-            # RESTORED: Fuzzy Matcher & Nickname Dictionary logic
             target = None
             for e in raw_poly:
                 if is_team_match(h_nk, e.get('title', '')) and is_team_match(a_nk, e.get('title', '')):
