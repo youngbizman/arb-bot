@@ -36,9 +36,9 @@ class ApiClients:
         url = "https://api.the-odds-api.com/v4/sports/basketball_nba/odds"
         params = {
             "apiKey": self.settings.odds_api_key,
-            "regions": "eu,us,uk",
+            "regions": "eu,us",
             "markets": "h2h,totals,spreads",
-            "bookmakers": "pinnacle,onexbet,bet365",
+            "bookmakers": "pinnacle,onexbet,draftkings",
         }
         try:
             data = self._get_json(url, params=params)
@@ -97,9 +97,9 @@ class ApiClients:
         url = "https://api.the-odds-api.com/v4/sports/mma_mixed_martial_arts/odds"
         params = {
             "apiKey": self.settings.odds_api_key,
-            "regions": "eu,us,uk",
+            "regions": "eu,us",
             "markets": "h2h,totals", 
-            "bookmakers": "pinnacle,onexbet,bet365",
+            "bookmakers": "pinnacle,onexbet,draftkings",
         }
         try:
             data = self._get_json(url, params=params)
@@ -144,9 +144,9 @@ class ApiClients:
             url = f"https://api.the-odds-api.com/v4/sports/{league}/odds"
             params = {
                 "apiKey": self.settings.odds_api_key,
-                "regions": "eu,us,uk",
+                "regions": "eu,us",
                 "markets": "h2h,totals",  # FIXED: Removed BTTS to prevent 422 error
-                "bookmakers": "pinnacle,onexbet,bet365",
+                "bookmakers": "pinnacle,onexbet,draftkings",
             }
             try:
                 data = self._get_json(url, params=params)
