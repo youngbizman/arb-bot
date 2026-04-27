@@ -45,7 +45,7 @@ def normalize_asks(asks: Iterable[Mapping[str, str]]) -> list[BookLevel]:
 def fee_per_share(p: Decimal, r: Decimal) -> Decimal:
     return r * p * (Decimal("1") - p)
 
-def evaluate_buy_hedge_from_asks(asks, decimal_odds, bankroll="100", fee_rate="0.03", max_avg_impact_rel="0.02"):
+def evaluate_buy_hedge_from_asks(asks, decimal_odds, bankroll="100", fee_rate="0.01", max_avg_impact_rel="0.02"):
     levels = normalize_asks(asks)
     odds, bankroll_d, fee_r = Decimal(str(decimal_odds)), Decimal(bankroll), Decimal(fee_rate)
     inv_odds = Decimal("1") / odds
@@ -54,6 +54,8 @@ def evaluate_buy_hedge_from_asks(asks, decimal_odds, bankroll="100", fee_rate="0
     if not levels: return HedgeEstimate(None, Decimal("0"), Decimal("0"), Decimal("0"), Decimal("0"), Decimal("0"), None, None, Decimal("0"), False, "Empty Orderbook")
 
     best = levels[0]
+    if best.price <= 0: return HedgeEstimate(best.price, Decimal("0"), Decimal("0"), Decimal("0"), Decimal("0"), Decimal("0"), None, None, Decimal("0"), False, "Invalid Price")
+
     q, cost, fees = Decimal("0"), Decimal("0"), Decimal("0")
     marginal, full_bankroll_supported = None, False
 
@@ -99,13 +101,21 @@ def format_to_local(iso: str) -> str:
     except: return iso[:10]
 
 def parse_iso8601_to_epoch(t):
+    if not t: return 0
     try: return int(datetime.fromisoformat(str(t).replace(" ", "T").replace("Z", "+00:00")).timestamp())
     except: return 0
 
+# STRUCTURAL FIX 1: Playoff Series vs Single Game Disambiguation
 def is_target_single_game(f_t, p_s, p_e):
     tf, ts, te = parse_iso8601_to_epoch(f_t), parse_iso8601_to_epoch(p_s), parse_iso8601_to_epoch(p_e)
     if tf == 0: return False
-    if ts > 0 and abs(ts - tf) > 14400: return False
+    
+    # Condition A: Poly gameStartTime must be within 24 hours of Fiat commence_time
+    if ts > 0 and abs(ts - tf) > 86400: return False
+    
+    # Condition B: Poly endDate cannot exceed 48 hours past Fiat commence_time (Blocks Series/Futures)
+    if te > 0 and (te - tf) > 172800: return False
+    
     return True
 
 def run() -> None:
@@ -113,24 +123,45 @@ def run() -> None:
     try: settings = load_settings()
     except ConfigError as exc: logger.error(f"Config error: {exc}"); return
     clients = ApiClients(settings)
+    
     try:
-        logger.info("📡 Initializing NBA Sniper...")
+        logger.info("📡 Initializing NBA Sniper (Structural Time-Gated)...")
         raw_odds, raw_poly = clients.get_fiat_data(), clients.get_polymarket_events()
+        
         fiat_games = {}
+        now_utc = datetime.now(timezone.utc)
+        
         for game in raw_odds:
             h, a = game.get('home_team'), game.get('away_team')
             if not h or not a: continue
+            
+            commence_str = game.get('commence_time')
+            commence_utc = datetime.fromisoformat(commence_str.replace("Z", "+00:00"))
+            
             k = f"{clean(h)}_{clean(a)}"
             if k not in fiat_games: 
                 fiat_games[k] = {
-                    "home": h, 
-                    "away": a, 
-                    "time": game.get('commence_time'), 
-                    "sport_key": game.get('sport_key', 'nba'), 
-                    "bookies": []
+                    "home": h, "away": a, "time": commence_str, 
+                    "sport_key": game.get('sport_key', 'nba'), "bookies": []
                 }
+                
             for b in game.get("bookmakers", []):
-                b_data = {"name": b.get("title"), "last_update": b.get("last_update"), "h2h": {}, "totals": {}, "spreads": {}}
+                # STRUCTURAL FIX 2: Stale Data Firewall
+                last_update_str = b.get("last_update")
+                if last_update_str:
+                    last_update = datetime.fromisoformat(last_update_str.replace("Z", "+00:00"))
+                    age_seconds = (now_utc - last_update).total_seconds()
+                    
+                    is_live = now_utc >= commence_utc
+                    
+                    # Drop Live data if older than 120 seconds (Frozen Bookie protection)
+                    if is_live and age_seconds > 120:
+                        continue
+                    # Drop Pre-match data if older than 20 minutes
+                    if not is_live and age_seconds > 1200:
+                        continue
+
+                b_data = {"name": b.get("title"), "last_update": last_update_str, "h2h": {}, "totals": {}, "spreads": {}}
                 for m in b.get("markets", []):
                     mk = m.get('key')
                     for o in m.get('outcomes', []):
@@ -144,10 +175,12 @@ def run() -> None:
                         elif mk == 'spreads':
                             if pt not in b_data["spreads"]: b_data["spreads"][pt] = {}
                             b_data["spreads"][pt][nm] = pr
-                fiat_games[k]["bookies"].append(b_data)
+                if b_data["h2h"]: # Only append if the bookie survived the staleness check and has data
+                    fiat_games[k]["bookies"].append(b_data)
 
         opportunities, fiat_opportunities = [], []
         for gk, x in fiat_games.items():
+            if not x["bookies"]: continue # Skip if all bookies were frozen
             h_nk, a_nk = clean(x["home"]), clean(x["away"])
             logger.info(f"\n🏀 MATCHED: {x['home']} vs {x['away']} | Local Time: {format_to_local(x['time'])}")
             logger.info("-" * 80)
@@ -165,9 +198,17 @@ def run() -> None:
                                 roi = round(((1/float(imp))-1)*100, 2)
                                 if 0 < roi < 15.0: fiat_opportunities.append(_build_fiat_opp(x, b1["name"], b2["name"], o1, o2, "ML", t_nm, opp_nk, imp, roi))
 
-            # 2. Poly Scanner
-            target = next((e for e in raw_poly if h_nk in e.get('title','').lower() and a_nk in e.get('title','').lower()), None)
-            if not target or not is_target_single_game(x["time"], target.get("gameStartTime"), target.get("endDate")): continue
+            # 2. Poly Scanner (Now protected by strict timestamp disambiguation)
+            target = None
+            for e in raw_poly:
+                title = e.get('title', '').lower()
+                if h_nk in title and a_nk in title:
+                    if is_target_single_game(x["time"], e.get("gameStartTime"), e.get("endDate")):
+                        target = e
+                        break
+                        
+            if not target: continue
+            
             for b in x["bookies"]:
                 for m in target.get('markets', []):
                     if not m.get('acceptingOrders'): continue
@@ -184,11 +225,9 @@ def run() -> None:
                                 f_opp = b["h2h"].get(opp_nk)
                                 if f_opp:
                                     hedge = evaluate_buy_hedge_from_asks(book.get("asks", []), f_opp)
-                                    
                                     if hedge.passes_liquidity_filter:
                                         roi = round(float((hedge.locked_profit/hedge.total_outlay)*100), 2)
                                         logger.info(f"   [ML] {b['name']:<12} | {t_nm[:10]:<10} | {b['name']}: {float(f_opp):<5} | ROI: {roi}% | Status: ✅")
-                                        
                                         if 0 < roi < 15.0: 
                                             opportunities.append(_build_opp(x, b["name"], f_opp, hedge, "ML", t_nm, opp_nk, roi, 0.0, 0.0))
                                         else:
