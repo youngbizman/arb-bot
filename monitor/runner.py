@@ -184,10 +184,17 @@ def run() -> None:
                                 f_opp = b["h2h"].get(opp_nk)
                                 if f_opp:
                                     hedge = evaluate_buy_hedge_from_asks(book.get("asks", []), f_opp)
-                                    logger.info(f"   [ML] {b['name']:<12} | {t_nm[:10]:<10} | {b['name']}: {float(f_opp):<5} | Status: {'✅' if hedge.passes_liquidity_filter else '❌ ' + str(hedge.reject_reason)}")
+                                    
                                     if hedge.passes_liquidity_filter:
                                         roi = round(float((hedge.locked_profit/hedge.total_outlay)*100), 2)
-                                        if 0 < roi < 15.0: opportunities.append(_build_opp(x, b["name"], f_opp, hedge, "ML", t_nm, opp_nk, roi, 0.0, 0.0))
+                                        logger.info(f"   [ML] {b['name']:<12} | {t_nm[:10]:<10} | {b['name']}: {float(f_opp):<5} | ROI: {roi}% | Status: ✅")
+                                        
+                                        if 0 < roi < 15.0: 
+                                            opportunities.append(_build_opp(x, b["name"], f_opp, hedge, "ML", t_nm, opp_nk, roi, 0.0, 0.0))
+                                        else:
+                                            logger.info(f"      ↳ ⚠️ Alert Skipped: ROI {roi}% is outside safe bounds (0-15%)")
+                                    else:
+                                        logger.info(f"   [ML] {b['name']:<12} | {t_nm[:10]:<10} | {b['name']}: {float(f_opp):<5} | Status: ❌ {hedge.reject_reason}")
 
         logger.info("\n" + "="*80)
         final_alerts = build_global_alerts(opportunities, fiat_opportunities, limit=3)
