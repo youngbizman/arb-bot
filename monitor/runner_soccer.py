@@ -98,6 +98,8 @@ def evaluate_buy_hedge_from_asks(asks, decimal_odds, bankroll="100", fee_rate="0
 def clean_for_matching(text: str) -> str:
     if not text: return ""
     text = unicodedata.normalize('NFKD', str(text)).encode('ASCII', 'ignore').decode('utf-8').lower()
+    # FIX: Convert hyphens to spaces before stripping punctuation
+    text = text.replace('-', ' ')
     return re.sub(r'[^a-z0-9\s]', '', text)
 
 def is_team_match(fiat_team: str, poly_text: str) -> bool:
@@ -109,6 +111,7 @@ def is_team_match(fiat_team: str, poly_text: str) -> bool:
         "atletico madrid": "atletico",
         "tottenham hotspur": "spurs",
         "bayern munich": "bayern",
+        "bayern munchen": "bayern",  # Added German spelling
         "borussia dortmund": "dortmund",
         "ac milan": "milan",
         "internazionale": "inter"
