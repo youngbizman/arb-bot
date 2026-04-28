@@ -63,12 +63,12 @@ class ApiClients:
     def get_clob_book(self, token_id: str) -> dict[str, Any]:
         if not str(token_id).strip(): return {"asks": [], "bids": [], "timestamp": "0"}
         
-        # FIXED: Updated to the new V2 CLOB subdomain and path format
-        url = f"https://clob-v2.polymarket.com/book/{token_id}"
+        # REVERTED: Back to the stable V1 structure that perfectly handles the data
+        url = "https://clob.polymarket.com/book"
+        params = {"token_id": token_id}
         
         try:
-            # Token ID is now in the URL path, no query params needed for V2
-            data = self._get_json(url)
+            data = self._get_json(url, params=params)
             if not isinstance(data, dict): return {"asks": [], "bids": [], "timestamp": "0"}
             return {
                 "asks": data.get("asks", []),
