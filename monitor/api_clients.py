@@ -62,10 +62,13 @@ class ApiClients:
     # --- SHARED POLYMARKET CLOB METHOD ---
     def get_clob_book(self, token_id: str) -> dict[str, Any]:
         if not str(token_id).strip(): return {"asks": [], "bids": [], "timestamp": "0"}
-        url = "https://clob.polymarket.com/book"
-        params = {"token_id": token_id}
+        
+        # FIXED: Updated to the new V2 CLOB subdomain and path format
+        url = f"https://clob-v2.polymarket.com/book/{token_id}"
+        
         try:
-            data = self._get_json(url, params=params)
+            # Token ID is now in the URL path, no query params needed for V2
+            data = self._get_json(url)
             if not isinstance(data, dict): return {"asks": [], "bids": [], "timestamp": "0"}
             return {
                 "asks": data.get("asks", []),
@@ -145,7 +148,7 @@ class ApiClients:
             params = {
                 "apiKey": self.settings.odds_api_key,
                 "regions": "eu,us",
-                "markets": "h2h,totals",  # FIXED: Removed BTTS to prevent 422 error
+                "markets": "h2h,totals",
                 "bookmakers": "pinnacle,onexbet,draftkings",
             }
             try:
