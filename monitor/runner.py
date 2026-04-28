@@ -45,7 +45,8 @@ def normalize_asks(asks: Iterable[Mapping[str, str]]) -> list[BookLevel]:
 def fee_per_share(p: Decimal, r: Decimal) -> Decimal:
     return r * p * (Decimal("1") - p)
 
-def evaluate_buy_hedge_from_asks(asks, decimal_odds, bankroll="100", fee_rate="0.01", max_avg_impact_rel="0.02"):
+# RESTORED: Fee rate set back to exactly 3% (0.03) to match your original working math
+def evaluate_buy_hedge_from_asks(asks, decimal_odds, bankroll="100", fee_rate="0.03", max_avg_impact_rel="0.02"):
     levels = normalize_asks(asks)
     odds, bankroll_d, fee_r = Decimal(str(decimal_odds)), Decimal(bankroll), Decimal(fee_rate)
     inv_odds = Decimal("1") / odds
