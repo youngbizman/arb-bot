@@ -146,9 +146,7 @@ def run() -> None:
                     age_seconds = (now_utc - last_update).total_seconds()
                     is_live = now_utc >= commence_utc
                     
-                    # HARD KILL: Block live games to prevent Ghost Lines
                     if is_live: continue
-                    # Pre-Match Staleness Protection
                     if not is_live and age_seconds > 1200: continue
 
                 b_data = {"name": b.get("title"), "h2h": {}, "totals": {}, "spreads": {}}
@@ -205,11 +203,11 @@ def run() -> None:
                                     
                                     if hedge.passes_liquidity_filter:
                                         roi = round(float((hedge.locked_profit/hedge.total_outlay)*100), 2)
-                                        logger.info(f"   [ML] {b['name']:<10} | {t_nm[:10]:<10} | Fiat Opp: {float(f_opp):<5.2f} | Poly Ask: {poly_price:<5} | ROI: {roi}% | Status: ✅")
+                                        logger.info(f"   [ML] {b['name']:<10} | Buy Poly: {t_nm[:10]:<10} ({poly_price:<5}) | Bet Fiat: {opp_nk.title()[:10]:<10} ({float(f_opp):<4.2f}) | ROI: {roi}% | ✅")
                                         if 0 < roi < 15.0: 
                                             opportunities.append(_build_opp(x, b["name"], f_opp, hedge, "ML", t_nm, opp_nk, roi, 0.0, 0.0))
                                     else:
-                                        logger.info(f"   [ML] {b['name']:<10} | {t_nm[:10]:<10} | Fiat Opp: {float(f_opp):<5.2f} | Poly Ask: {poly_price:<5} | Status: ❌ {hedge.reject_reason}")
+                                        logger.info(f"   [ML] {b['name']:<10} | Buy Poly: {t_nm[:10]:<10} ({poly_price:<5}) | Bet Fiat: {opp_nk.title()[:10]:<10} ({float(f_opp):<4.2f}) | ❌ {hedge.reject_reason}")
 
         logger.info("\n" + "="*80)
         final_alerts = build_global_alerts(opportunities, fiat_opportunities, limit=3)
