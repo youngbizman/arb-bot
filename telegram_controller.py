@@ -7,16 +7,17 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 # Your unique bot token from BotFather
 TELEGRAM_TOKEN = "8586430735:AAFR16Gw8QZ-JqCIMRMBiM-_VonyevW4f-k"
 
-# Your GitHub credentials for alirezas7/global-arbitrage
+# Your GitHub credentials for alirezas7/arb-bot
 GITHUB_TOKEN = "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"
 GITHUB_OWNER = "alirezas7"
-GITHUB_REPO = "global-arbitrage"
+# FIXED: Updated to match your actual repository name in GitHub
+GITHUB_REPO = "arb-bot"
 
-# These must match your .yml filenames in .github/workflows
+# FIXED: Updated to match your actual .yml filenames in your workflows folder
 WORKFLOWS = {
-    "nba": "nba.yml",
-    "soccer": "soccer.yml",
-    "ufc": "ufc.yml"
+    "nba": "nba-bot.yml",
+    "soccer": "soccer-bot.yml",
+    "ufc": "ufc-bot.yml"
 }
 
 logging.basicConfig(
@@ -47,6 +48,7 @@ class TelegramController:
         data = {"ref": "main"}
 
         try:
+            # This triggers the "workflow_dispatch" in your .yml files
             response = requests.post(url, headers=self.headers, json=data)
             response.raise_for_status()
             await update.message.reply_text(f"🚀 Success! GitHub is now starting the {sport.upper()} scanner.")
@@ -66,6 +68,7 @@ if __name__ == "__main__":
     controller = TelegramController()
     application = Application.builder().token(TELEGRAM_TOKEN).build()
 
+    # Commands registered in your bot
     application.add_handler(CommandHandler("start", controller.start))
     application.add_handler(CommandHandler("run_nba", controller.run_nba))
     application.add_handler(CommandHandler("run_soccer", controller.run_soccer))
