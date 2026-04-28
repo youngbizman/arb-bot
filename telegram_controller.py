@@ -9,7 +9,7 @@ TELEGRAM_TOKEN = "8586430735:AAFR16Gw8QZ-JqCIMRMBiM-_VonyevW4f-k"
 
 # Your GitHub credentials for alirezas7/arb-bot
 GITHUB_TOKEN = "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"
-GITHUB_OWNER = "alirezas7"
+GITHUB_OWNER = "youngbizman"
 # FIXED: Updated to match your actual repository name in GitHub
 GITHUB_REPO = "arb-bot"
 
