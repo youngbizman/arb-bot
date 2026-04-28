@@ -105,17 +105,11 @@ def parse_iso8601_to_epoch(t):
     try: return int(datetime.fromisoformat(str(t).replace(" ", "T").replace("Z", "+00:00")).timestamp())
     except: return 0
 
-# STRUCTURAL FIX 1: Playoff Series vs Single Game Disambiguation
 def is_target_single_game(f_t, p_s, p_e):
     tf, ts, te = parse_iso8601_to_epoch(f_t), parse_iso8601_to_epoch(p_s), parse_iso8601_to_epoch(p_e)
     if tf == 0: return False
-    
-    # Condition A: Poly gameStartTime must be within 24 hours of Fiat commence_time
     if ts > 0 and abs(ts - tf) > 86400: return False
-    
-    # Condition B: Poly endDate cannot exceed 48 hours past Fiat commence_time (Blocks Series/Futures)
     if te > 0 and (te - tf) > 172800: return False
-    
     return True
 
 def run() -> None:
@@ -125,7 +119,7 @@ def run() -> None:
     clients = ApiClients(settings)
     
     try:
-        logger.info("📡 Initializing NBA Sniper (Structural Time-Gated)...")
+        logger.info("📡 Initializing NBA Sniper (Pre-Match Hard Kill)...")
         raw_odds, raw_poly = clients.get_fiat_data(), clients.get_polymarket_events()
         
         fiat_games = {}
@@ -146,22 +140,18 @@ def run() -> None:
                 }
                 
             for b in game.get("bookmakers", []):
-                # STRUCTURAL FIX 2: Stale Data Firewall
                 last_update_str = b.get("last_update")
                 if last_update_str:
                     last_update = datetime.fromisoformat(last_update_str.replace("Z", "+00:00"))
                     age_seconds = (now_utc - last_update).total_seconds()
-                    
                     is_live = now_utc >= commence_utc
                     
-                    # Strict 120-second latency cutoff for live games
-                    if is_live and age_seconds > 120: 
-                        continue
-                    # Relaxed 24-hour cutoff for soft books (Bet365) during pre-match
-                    if not is_live and age_seconds > 86400: 
-                        continue
+                    # HARD KILL: Block live games to prevent Ghost Lines
+                    if is_live: continue
+                    # Pre-Match Staleness Protection
+                    if not is_live and age_seconds > 1200: continue
 
-                b_data = {"name": b.get("title"), "last_update": last_update_str, "h2h": {}, "totals": {}, "spreads": {}}
+                b_data = {"name": b.get("title"), "h2h": {}, "totals": {}, "spreads": {}}
                 for m in b.get("markets", []):
                     mk = m.get('key')
                     for o in m.get('outcomes', []):
@@ -175,30 +165,16 @@ def run() -> None:
                         elif mk == 'spreads':
                             if pt not in b_data["spreads"]: b_data["spreads"][pt] = {}
                             b_data["spreads"][pt][nm] = pr
-                if b_data["h2h"]: # Only append if the bookie survived the staleness check and has data
+                if b_data["h2h"]:
                     fiat_games[k]["bookies"].append(b_data)
 
         opportunities, fiat_opportunities = [], []
         for gk, x in fiat_games.items():
-            if not x["bookies"]: continue # Skip if all bookies were frozen
+            if not x["bookies"]: continue
             h_nk, a_nk = clean(x["home"]), clean(x["away"])
             logger.info(f"\n🏀 MATCHED: {x['home']} vs {x['away']} | Local Time: {format_to_local(x['time'])}")
             logger.info("-" * 80)
 
-            # 1. Fiat Scanner
-            for i in range(len(x["bookies"])):
-                for j in range(i + 1, len(x["bookies"])):
-                    b1, b2 = x["bookies"][i], x["bookies"][j]
-                    for t_nm, o1 in b1["h2h"].items():
-                        opp_nk = h_nk if t_nm == a_nk else a_nk
-                        o2 = b2["h2h"].get(opp_nk)
-                        if o1 and o2:
-                            imp = (Decimal("1")/o1) + (Decimal("1")/o2)
-                            if imp < 1:
-                                roi = round(((1/float(imp))-1)*100, 2)
-                                if 0 < roi < 15.0: fiat_opportunities.append(_build_fiat_opp(x, b1["name"], b2["name"], o1, o2, "ML", t_nm, opp_nk, imp, roi))
-
-            # 2. Poly Scanner (Now protected by strict timestamp disambiguation)
             target = None
             for e in raw_poly:
                 title = e.get('title', '').lower()
@@ -206,7 +182,6 @@ def run() -> None:
                     if is_target_single_game(x["time"], e.get("gameStartTime"), e.get("endDate")):
                         target = e
                         break
-                        
             if not target: continue
             
             for b in x["bookies"]:
@@ -218,22 +193,23 @@ def run() -> None:
                     except: continue
                     if mt == 'moneyline':
                         for idx, t_nm in enumerate(outs):
-                            p_nk, f_odds = clean(t_nm), b["h2h"].get(clean(t_nm))
+                            p_nk = clean(t_nm)
+                            f_odds = b["h2h"].get(p_nk)
                             if f_odds:
                                 book = clients.get_clob_book(toks[idx])
                                 opp_nk = h_nk if p_nk == a_nk else a_nk
                                 f_opp = b["h2h"].get(opp_nk)
                                 if f_opp:
                                     hedge = evaluate_buy_hedge_from_asks(book.get("asks", []), f_opp)
+                                    poly_price = f"${float(hedge.best_ask):.2f}" if hedge.best_ask else "N/A"
+                                    
                                     if hedge.passes_liquidity_filter:
                                         roi = round(float((hedge.locked_profit/hedge.total_outlay)*100), 2)
-                                        logger.info(f"   [ML] {b['name']:<12} | {t_nm[:10]:<10} | {b['name']}: {float(f_opp):<5} | ROI: {roi}% | Status: ✅")
+                                        logger.info(f"   [ML] {b['name']:<10} | {t_nm[:10]:<10} | Fiat Opp: {float(f_opp):<5.2f} | Poly Ask: {poly_price:<5} | ROI: {roi}% | Status: ✅")
                                         if 0 < roi < 15.0: 
                                             opportunities.append(_build_opp(x, b["name"], f_opp, hedge, "ML", t_nm, opp_nk, roi, 0.0, 0.0))
-                                        else:
-                                            logger.info(f"      ↳ ⚠️ Alert Skipped: ROI {roi}% is outside safe bounds (0-15%)")
                                     else:
-                                        logger.info(f"   [ML] {b['name']:<12} | {t_nm[:10]:<10} | {b['name']}: {float(f_opp):<5} | Status: ❌ {hedge.reject_reason}")
+                                        logger.info(f"   [ML] {b['name']:<10} | {t_nm[:10]:<10} | Fiat Opp: {float(f_opp):<5.2f} | Poly Ask: {poly_price:<5} | Status: ❌ {hedge.reject_reason}")
 
         logger.info("\n" + "="*80)
         final_alerts = build_global_alerts(opportunities, fiat_opportunities, limit=3)
@@ -241,10 +217,6 @@ def run() -> None:
         logger.info(f"✅ SCAN COMPLETE. Sent {len(final_alerts)} alerts.")
         logger.info("="*80)
     finally: clients.close()
-
-def _build_fiat_opp(x, b1, b2, o1, o2, m, s1, s2, imp, roi):
-    payout = 100.0 / float(imp)
-    return FiatArbitrageOpportunity(x['sport_key'], x['home'], x['away'], format_to_local(x['time']), m, b1, s1, float(o1), (payout/float(o1)), b2, s2, float(o2), (payout/float(o2)), float(imp), payout, roi)
 
 def _build_opp(x, b, f_o, hedge, m, p_s, f_s, roi, dt, sp):
     return ArbitrageOpportunity("nba", x['home'], x['away'], format_to_local(x['time']), m, p_s, f_s, b, float(f_o), float(hedge.shares), float(hedge.vwap or 0), float(hedge.marginal_price or 0), float(hedge.poly_spend), float(hedge.poly_fees), float(hedge.sportsbook_stake), float(hedge.total_outlay), float(hedge.locked_profit), roi, dt, sp)
